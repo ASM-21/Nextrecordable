@@ -1,0 +1,33 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Data (do not commit raw OSHA files)
+data/raw/
+data/processed/
+data/*.duckdb
+data/*.duckdb.wal
+
+# Trained model artifacts (regenerable, can be large)
+models/*/model.txt
+models/*/calibrator.pkl
+models/*/meta.json
+model_out/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Env
+.env
+.envrc
