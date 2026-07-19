@@ -79,3 +79,11 @@ check that job if downloads start failing and nothing in this repo changed.
   new open data portal as of 2026). `enforcement.py`'s loaders accept local
   file paths rather than hardcoding URLs for this reason — download manually
   from whatever the current portal is and point the loader at the file.
+- `api.py` serializes every request behind a single lock because
+  `match.py`'s pipeline writes to shared temp tables on the DuckDB
+  connection (`match_input_normalized`, `match_final`, splink's internal
+  `__splink__*` tables). This is fine for a demo or low-traffic broker tool.
+  Before real concurrent load: either give each request its own DuckDB
+  connection (attach the same file, DuckDB supports multiple readers) or
+  move matching to a separate async job queue instead of doing it inline
+  per-request.

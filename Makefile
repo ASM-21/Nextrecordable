@@ -1,4 +1,4 @@
-.PHONY: help install dev-install test test-fast lint fix format download load explore clean
+.PHONY: help install dev-install test test-fast lint fix format download load explore serve clean
 
 help:
 	@echo "osha-risk dev commands"
@@ -12,6 +12,7 @@ help:
 	@echo "  make download      Download OSHA ITA summary data (2016-2024)"
 	@echo "  make load          Load downloaded data into DuckDB"
 	@echo "  make explore       Print summary stats from the loaded DB"
+	@echo "  make serve         Run the API server (needs a saved model in data/model)"
 	@echo "  make clean         Remove caches, __pycache__, build artifacts"
 
 install:
@@ -40,6 +41,9 @@ load:
 
 explore:
 	python -m osha_risk.cli explore
+
+serve:
+	OSHA_RISK_SERVE=1 uvicorn osha_risk.api:app --host 0.0.0.0 --port 8000 --reload
 
 clean:
 	find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true

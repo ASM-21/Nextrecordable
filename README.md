@@ -37,8 +37,50 @@ osha_risk/
 ├── models/
 │   └── baseline.py  # LightGBM classifier, temporal holdout, isotonic calibration
 ├── report.py        # Per-establishment risk report (the API/PDF unit)
+├── api.py           # FastAPI service: POST /score, POST /score-batch
 └── cli.py           # Typer CLI
 ```
+
+## Running the API
+
+Train and save a model once (offline), then serve it:
+
+```bash
+make download && make load          # get real OSHA data
+python -c "
+from osha_risk.load import connect
+from osha_risk.schema import build_canonical_view
+from osha_risk.features import build_establishment_key_view, build_panel
+from osha_risk.models.baseline import train_baseline, save_model
+
+con = connect()
+build_canonical_view(con)
+build_establishment_key_view(con)
+build_panel(con)
+result = train_baseline(con, train_through=2022)  # val=2023, test=2024
+save_model(result, 'data/model')
+"
+
+make serve   # OSHA_RISK_SERVE=1 uvicorn osha_risk.api:app
+```
+
+Then:
+
+```bash
+# Single establishment
+curl -X POST localhost:8000/score -H "Content-Type: application/json" -d '{
+  "name": "Acme Manufacturing Inc",
+  "street_address": "123 Main St",
+  "state": "IL",
+  "zip_code": "60601"
+}'
+
+# CSV batch (broker's book of business)
+curl -X POST localhost:8000/score-batch -F "file=@book_of_business.csv"
+# CSV needs columns: name, state, zip_code (street_address, city optional)
+```
+
+Both endpoints run the full pipeline live: entity resolution (splink + softkey fallback) against whatever `OSHA_RISK_PANEL_TABLE` points to, then `report.risk_report()` for the calibrated score, drivers, and history. See `osha_risk/api.py` docstring for the concurrency caveat (requests are serialized behind a lock — fine for a demo, not for production load).
 
 ## Quick start
 
@@ -112,8 +154,8 @@ This is the section that will be longest in the final docs. A few things users a
 - [x] Per-establishment risk report (JSON-shaped, ready for API/PDF)
 - [x] Enforcement data integration (DOL inspections, citations, penalties)
 - [x] Splink-based entity resolution for user-uploaded CSVs
+- [x] FastAPI endpoints (POST /score, POST /score-batch)
 - [ ] Real-data sanity notebook against 2023+2024 OSHA data
-- [ ] FastAPI endpoints (POST /score, POST /score-batch)
 - [ ] PDF report generation
 - [ ] Public free-tier search interface
 - [ ] Stripe billing for Pro / Team tiers

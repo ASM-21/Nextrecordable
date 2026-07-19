@@ -393,3 +393,46 @@ def save_model(result: TrainResult, dest_dir: Path) -> None:
         import pickle
         with open(dest_dir / "calibrator.pkl", "wb") as f:
             pickle.dump(result.calibrator, f)
+
+
+def load_model(model_dir: Path) -> TrainResult:
+    """Reconstruct a TrainResult from artifacts written by save_model.
+
+    This is what the API server calls at startup: train once (offline,
+    scheduled), save artifacts, then load-and-serve without retraining.
+    The returned TrainResult has a real Booster and calibrator; it's safe to
+    pass directly into report.risk_report.
+    """
+    import json
+    import pickle
+
+    model_dir = Path(model_dir)
+    if not (model_dir / "model.txt").exists():
+        raise FileNotFoundError(
+            f"No model.txt found in {model_dir}. Train and save a model first "
+            f"with models.baseline.train_baseline() + save_model()."
+        )
+
+    booster = lgb.Booster(model_file=str(model_dir / "model.txt"))
+
+    meta_path = model_dir / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+
+    calibrator = None
+    cal_path = model_dir / "calibrator.pkl"
+    if cal_path.exists():
+        with open(cal_path, "rb") as f:
+            calibrator = pickle.load(f)
+
+    return TrainResult(
+        model=booster,
+        calibrator=calibrator,
+        feature_names=meta.get("feature_names", list(ALL_FEATURES)),
+        categorical_features=meta.get("categorical_features", list(CATEGORICAL_FEATURES)),
+        train_through=meta.get("train_through", -1),
+        val_year=meta.get("val_year", -1),
+        test_year=meta.get("test_year", -1),
+        metrics=meta.get("metrics", {}),
+        calibration_table=meta.get("calibration_table", []),
+        feature_importance=[tuple(x) for x in meta.get("feature_importance", [])],
+    )
