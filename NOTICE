@@ -1,0 +1,18 @@
+nextrecordable
+Copyright 2026 Andrew Morrissey
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Data
+----
+nextrecordable downloads and processes, at run time, data published by the
+U.S. Department of Labor:
+
+  * OSHA Injury Tracking Application (ITA) establishment-specific injury and
+    illness data (Form 300A summaries; Forms 300/301 case detail).
+  * DOL OSHA enforcement data (osha_inspection, osha_violation).
+
+These are works of the U.S. federal government and are in the public domain
+in the United States. They are not redistributed in this repository.
+nextrecordable is an independent project and is not affiliated with,
+endorsed by, or produced on behalf of OSHA or the Department of Labor.

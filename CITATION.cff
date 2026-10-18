@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use nextrecordable, please cite it as below."
+title: "nextrecordable: establishment-level injury risk from OSHA public data"
+type: software
+authors:
+  - family-names: Morrissey
+    given-names: Andrew
+    orcid: "https://orcid.org/0009-0004-8758-2687"
+repository-code: "https://github.com/ASM-21/nextrecordable"
+license: Apache-2.0
+version: 0.2.0
+keywords:
+  - occupational safety
+  - OSHA
+  - injury tracking application
+  - workers compensation
+  - risk modeling
+  - record linkage

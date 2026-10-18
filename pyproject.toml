@@ -4,6 +4,8 @@ version = "0.2.0"
 description = "Establishment-level injury risk from OSHA's public injury logs and enforcement records"
 requires-python = ">=3.11"
 authors = [{ name = "Andrew Morrissey" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 readme = "README.md"
 # Upper bounds on major versions: splink 5.0 changed its API and broke every
 # fresh install of an earlier version of this project overnight.
@@ -29,7 +31,7 @@ dev = ["ruff>=0.5", "pytest>=8.0"]
 nextrecordable = "nextrecordable.cli:app"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

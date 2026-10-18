@@ -1,89 +1,53 @@
-# Contributing / working on this repo
-
-Notes for future-you (or anyone else) picking this project back up.
+# Contributing
 
 ## Setup
 
 ```bash
-git clone <repo-url>
-cd osha-risk
 python -m venv .venv && source .venv/bin/activate
-make dev-install
-make test
+pip install -e ".[dev]"
+pytest -q && ruff check .
 ```
 
-If `make test` passes on a clean clone, the environment is good.
+Tests use synthetic files only (`tests/synthetic.py`, `tests/synthetic_enforcement.py`); no network, no real data.
 
-## Repo conventions
+## Conventions
 
-- **DuckDB is the only datastore.** No Postgres, no external services for
-  local dev. Everything lives in `data/osha.duckdb` (gitignored).
-- **Every pipeline stage is a pure function over a DuckDB connection.**
-  `build_X(con, ...) -> int` (row count) is the standard shape. Makes stages
-  composable and testable without touching disk.
-- **Synthetic fixtures over mocks.** `tests/synthetic.py` and
-  `tests/synthetic_enforcement.py` generate realistic OSHA-shaped data with
-  intentional schema drift and independent risk signals baked in. Prefer
-  extending these over mocking DuckDB calls.
-- **Schema drift is real and expected.** OSHA/DOL column names change across
-  years. `schema.py` and `enforcement.py`'s column-mapping dicts are the
-  single source of truth for known synonyms. When real data introduces a new
-  column name, add it to the relevant `*_CANDIDATES` tuple rather than
-  special-casing it downstream.
-- **Soft keys vs hard keys.** `estab_key` (md5 of normalized name+state+zip5)
-  is the PRIMARY identifier used everywhere, even though `establishment_id`
-  exists in recent ITA years. This is deliberate — see the docstring on
-  `features.build_establishment_key_view` for why using the hard ID would
-  break lag features at the 2022/2023 schema boundary.
+- **One implementation of every normalization rule.** Names, addresses, ZIPs and states are normalized in `normalize.py` and nowhere else. Pipeline steps map distinct raw values through those functions and join the results back (`keys.py`). If SQL needs a normalized value, it joins it in; it never re-implements the rule. Two copies of "the same" rule drifted apart once, and the soft-key joins silently returned nothing.
+- **Text in, types explicit.** Raw CSVs load with every column as VARCHAR. Type inference turned ZIPs into integers once and dropped their leading zeros.
+- **Pipeline steps are functions of a DuckDB connection** that build one table and return its row count. They compose, and tests call them directly.
+- **Per-request work on a per-request cursor.** API handlers take `con.cursor()` and keep scratch rows in TEMP tables, which are private to a cursor.
+- **Synthetic fixtures reproduce the real files' traps** (schema drift, size-code split, leading-zero ZIPs, amended filings, skipped years, DOL letter codes and integer ZIPs). When real data surprises you, teach the generator the surprise first.
+- **A bug gets a reproduction before a fix, and the reproduction becomes a test.** The README lists every one so far.
+- **No pickles.** Model artifacts are LightGBM text files plus JSON.
+
+## Changing the matcher
+
+Weights live at the top of `match.py`. Any change must keep `tests/test_match_quality.py` green: per-case accuracy floors, zero wrong matches, and the hard negatives (changed plant numbers, similar names in one ZIP). If you tune for recall, add the hard negative that would have caught the regression.
+
+## Adding a model feature
+
+1. Produce the raw column in a loader or `enforcement.py`.
+2. Add it to the panel (`features.py`) or the enforced panel. Use only information available when the forecast is made: a panel row for year t forecasts year t+1 and is scored after year-t ITA data is published.
+3. Add it to `NUMERIC_FEATURES`, `ENFORCEMENT_FEATURES` or `CATEGORICAL_FEATURES` and give it a label in `FEATURE_LABELS`.
+4. Teach the synthetic generator to carry real signal through it, and add a test that it is used.
+5. Read `reports/METRICS.md` against the baselines before keeping it.
+
+## Adding a data gate
+
+Gates live in `sanity.py`. Each records the measured value, the rule, and pass / warn / fail. A fail stops `run-all`; prefer warn unless a failure would make the model meaningless.
+
+## Good first contributions
+
+- Run `nextrecordable run-all` on real data and open an issue with your `reports/METRICS.md`. This is the most useful thing anyone can do right now.
+- Add features from DOL `osha_accident` (hospitalization and amputation reports).
+- Use the ITA case-detail files (Forms 300/301, 2023 onward) for injury-type mix.
+- Add BLS SOII industry rates as a second benchmark next to the NAICS-4 pooled rate.
+- Serve from read-only DuckDB copies so several processes can share one trained database.
 
 ## Before opening a PR
 
 ```bash
-make fix    # auto-fix lint issues
-make lint   # confirm clean
-make test   # confirm 100% pass
+ruff check . && pytest -q
 ```
 
-CI runs both on every push/PR (`.github/workflows/ci.yml`). It also runs a
-non-blocking weekly job that pings OSHA's data URLs to catch link rot —
-check that job if downloads start failing and nothing in this repo changed.
-
-## Adding a new feature to the model
-
-1. Add the raw column(s) via a loader (`load.py` or `enforcement.py` style)
-2. Wire it into the panel (`features.py` or `enforcement.py`'s
-   `attach_*_to_panel` pattern — always LAG features that wouldn't be known
-   at prediction time)
-3. Add the feature name to `NUMERIC_FEATURES` / `CATEGORICAL_FEATURES` in
-   `models/baseline.py`
-4. Extend the synthetic fixture so the new feature has realistic signal
-   (see how `compliance_factor` was added to `tests/synthetic.py` and
-   `tests/synthetic_enforcement.py` to give enforcement features real
-   predictive value independent of injury history)
-5. Add a test asserting the new feature appears with nonzero importance,
-   following `test_enforcement.py::test_model_uses_enforcement_features`
-
-## Known rough edges
-
-- Splink hits internal errors ("Salting partitions must be > 1") on very
-  small datasets. `match.py` wraps training calls in
-  `contextlib.suppress(Exception)` and falls back to default parameter
-  values, which is fine for our threshold-based use but worth revisiting if
-  match quality looks off on real data.
-- The soft-key hash in `match.py`'s `fallback_softkey_match` and in
-  `features.py`'s `build_establishment_key_view` MUST use identical SQL
-  normalization (not the Python `normalize_name`, which strips entity
-  suffixes and would produce a different hash). If you touch either, check
-  both.
-- Real DOL enforcement URLs are unstable (the agency is mid-migration to a
-  new open data portal as of 2026). `enforcement.py`'s loaders accept local
-  file paths rather than hardcoding URLs for this reason — download manually
-  from whatever the current portal is and point the loader at the file.
-- `api.py` serializes every request behind a single lock because
-  `match.py`'s pipeline writes to shared temp tables on the DuckDB
-  connection (`match_input_normalized`, `match_final`, splink's internal
-  `__splink__*` tables). This is fine for a demo or low-traffic broker tool.
-  Before real concurrent load: either give each request its own DuckDB
-  connection (attach the same file, DuckDB supports multiple readers) or
-  move matching to a separate async job queue instead of doing it inline
-  per-request.
+CI runs both on Python 3.11 to 3.13 for every PR, and weekly against the newest allowed dependency versions.

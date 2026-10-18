@@ -1,165 +1,119 @@
-# osha-risk
+# nextrecordable
 
-> Establishment-level workplace injury risk intelligence from OSHA's Injury Tracking Application.
+Forward-looking injury risk for any U.S. establishment that files OSHA injury logs: its expected recordable case rate next year, where that rate sits among industry peers, and what drives it. Built entirely on public data (OSHA's Injury Tracking Application and DOL enforcement records) for workers' comp brokers, loss-control engineers, and safety managers.
 
-[![CI](https://github.com/USERNAME/osha-risk/actions/workflows/ci.yml/badge.svg)](https://github.com/USERNAME/osha-risk/actions/workflows/ci.yml)
+[![CI](https://github.com/ASM-21/nextrecordable/actions/workflows/ci.yml/badge.svg)](https://github.com/ASM-21/nextrecordable/actions/workflows/ci.yml)
 
-A transparent, reproducible pipeline that turns OSHA's public Form 300A and 300/301 data into a usable risk-scoring layer for workers' comp brokers, loss-control engineers, and anyone else who needs a forward-looking view of injury risk at a specific establishment.
+> **Status.** Runs end to end on synthetic data built to reproduce the real files' quirks. It has not yet been run on real OSHA data; that first run is one command (`nextrecordable run-all`) and writes `reports/METRICS.md`. Until that report exists, no accuracy claim about real establishments should be made from this repo.
 
-Working on this repo? See `CONTRIBUTING.md` for setup, conventions, and where things live.
+An independent project. Not affiliated with, endorsed by, or produced on behalf of OSHA or the U.S. Department of Labor.
 
-## Status
+## What you get
 
-Data pipeline, panel construction, enforcement integration, entity resolution, and baseline model all work end-to-end against a synthetic fixture (56 passing tests). Not yet run against real OSHA/DOL data. No API or UI yet — see Roadmap.
+For one establishment (lookup page at `/` or `POST /score`) or a whole book of business (`POST /score-batch` with a CSV):
 
-## What this does (eventually)
+| output | meaning |
+|---|---|
+| `expected_tcr_next` | expected recordable cases per 100 full-time workers next year (per 200,000 hours). Size-adjusted; batch results rank by it |
+| `peer_pctile`, `risk_band` | where that rate falls among establishments in the same NAICS group |
+| `experience_rated_tcr_next` | the starting point: the establishment's last two years blended with its industry's rate |
+| `risk_drivers` | which features moved the estimate off that starting point, as rate multipliers |
+| `p_any_next` | chance of at least one recordable case next year (calibrated). Mostly a function of headcount; use the rate to compare sites |
+| `history`, `enforcement` | filed injury counts and rates by year; OSHA inspections, citations and initial penalties in the last two years |
+| `caveats` | always included, see below |
 
-Given a CSV of business names and addresses (a broker's book of business, a procurement supplier list, a journalist's investigation target list), return for each:
+## Method
 
-- Estimated probability of any recordable injury in the coming year
-- Estimated DART rate and TCR
-- Industry-and-size-adjusted benchmark percentile
-- OSHA inspection and citation history
-- Driver explanations (which features pushed risk up or down)
+| piece | how |
+|---|---|
+| Data | ITA Form 300A summaries (2016 onward, hundreds of thousands of establishments a year) and DOL `osha_inspection` / `osha_violation`. Every CSV column loads as text; typing happens explicitly in `schema.py`. |
+| Establishment identity | `estab_key` = hash of normalized name, state and 5-digit ZIP. One Python implementation of every normalization rule (`normalize.py`), joined into SQL rather than re-implemented in it. |
+| Panel | one row per establishment and year; lags and next-year outcomes only across adjacent calendar years; amended filings deduplicated; NAICS-4 median and pooled rates per year. |
+| Rate model | LightGBM, Poisson objective, offset log(hours) + log(experience-rated rate). The trees learn corrections to the actuarial estimate; early stopping on a held-out year decides how many survive. |
+| Binary model | LightGBM, P(any recordable next year), isotonic-calibrated on the validation year. |
+| Validation | temporal: train on years up to T, early-stop and calibrate on T+1, report on T+2. |
+| Matching | fixed-weight Fellegi-Sunter scorer in DuckDB SQL (name, numbers in the name, ZIP, street). Used for lookups, batch uploads, and linking DOL inspections to ITA filers. Close calls come back `ambiguous` with suggestions instead of a guess. |
 
-## What this does today
+## Why you can trust the numbers it will produce
 
-```
-osha_risk/
-├── config.py        # OSHA download URLs, paths, schema candidates
-├── download.py      # Streaming HTTP downloader with caching
-├── load.py          # Unzip + load yearly CSVs into DuckDB
-├── normalize.py     # Name and address normalization
-├── schema.py        # Resolves column-name drift across years -> canonical view
-├── features.py      # Builds establishment-year panel with lags + targets
-├── enforcement.py   # DOL inspection/violation/penalty integration
-├── match.py         # Splink-based fuzzy entity resolution for CSV uploads
-├── models/
-│   └── baseline.py  # LightGBM classifier, temporal holdout, isotonic calibration
-├── report.py        # Per-establishment risk report (the API/PDF unit)
-├── api.py           # FastAPI service: POST /score, POST /score-batch
-└── cli.py           # Typer CLI
-```
+- **Every model faces the baseline a skeptic would propose.** The rate model is scored against the industry rate and against the credibility blend it starts from; the binary model against a size + NAICS model. `reports/METRICS.md` prints the model and the baselines side by side, so "the ML adds nothing here" is a visible outcome, not a hidden one.
+- **Metrics that can't flatter.** Top-decile lift is printed next to its ceiling (1 / base rate: with 75% of sites logging a case, no model can exceed 1.33). Capture rate (share of next year's cases in the top 10%) and Poisson deviance on next-year hours carry the conclusions.
+- **Data gates before training.** `nextrecordable sanity` checks ZIP validity, that leading-zero ZIPs survived loading, hours per employee, duplicate filings, `year_filing_for` drift, hard-ID consistency, the size-code split, cross-year linkage, base rate, and the DOL link rate. A failed gate stops `run-all`.
+- **Every bug found so far is a regression test.** Each was reproduced before it was fixed:
 
-## Running the API
+| bug (version before 0.2.0) | evidence | test |
+|---|---|---|
+| Categorical codes came from Python's per-process `hash()` | serving from a new process changed 105 of 200 scores | `test_scores_identical_in_a_fresh_process` |
+| Shared connection and match tables across requests | 120 concurrent lookups: 18 wrong establishments, 100 errors | `test_concurrent_lookups_return_the_right_establishment` |
+| ZIP typed as an integer after DuckDB's sample | CT's 06511 stored as 6511 and never found | `test_leading_zero_zip_survives_type_sniffing` |
+| Amended filings: two rows per establishment-year | next-year target was the same year's other filing | `test_amended_filing_does_not_leak_into_targets` |
+| Skipped filing years | lag1 two years old, target two years ahead | `test_skipped_year_gives_no_lag_and_no_target` |
+| DOL letter codes read as words | every severity and inspection-type feature zero; deleted citations counted | `test_real_dol_codes_are_counted` |
+| Matcher trained per request | one-typo lookups matched 12 of 40 | `tests/test_match_quality.py` |
+| Unbounded dependency (splink 5.0) | every fresh install crashed on lookup | splink removed; major versions bounded; weekly CI against latest |
 
-Train and save a model once (offline), then serve it:
-
-```bash
-make download && make load          # get real OSHA data
-python -c "
-from osha_risk.load import connect
-from osha_risk.schema import build_canonical_view
-from osha_risk.features import build_establishment_key_view, build_panel
-from osha_risk.models.baseline import train_baseline, save_model
-
-con = connect()
-build_canonical_view(con)
-build_establishment_key_view(con)
-build_panel(con)
-result = train_baseline(con, train_through=2022)  # val=2023, test=2024
-save_model(result, 'data/model')
-"
-
-make serve   # OSHA_RISK_SERVE=1 uvicorn osha_risk.api:app
-```
-
-Then:
-
-```bash
-# Single establishment
-curl -X POST localhost:8000/score -H "Content-Type: application/json" -d '{
-  "name": "Acme Manufacturing Inc",
-  "street_address": "123 Main St",
-  "state": "IL",
-  "zip_code": "60601"
-}'
-
-# CSV batch (broker's book of business)
-curl -X POST localhost:8000/score-batch -F "file=@book_of_business.csv"
-# CSV needs columns: name, state, zip_code (street_address, city optional)
-```
-
-Both endpoints run the full pipeline live: entity resolution (splink + softkey fallback) against whatever `OSHA_RISK_PANEL_TABLE` points to, then `report.risk_report()` for the calibrated score, drivers, and history. See `osha_risk/api.py` docstring for the concurrency caveat (requests are serialized behind a lock — fine for a demo, not for production load).
+The match harness (`tests/test_match_quality.py`) pins floors: exact, uppercase, abbreviated, ZIP+4 and lost-leading-zero lookups 100%; one typo at least 97%; zero wrong matches in every case; a changed plant number or a similar name in the same ZIP never matched.
 
 ## Quick start
 
 ```bash
-git clone <repo-url>
-cd osha-risk
+git clone https://github.com/ASM-21/nextrecordable && cd nextrecordable
 python -m venv .venv && source .venv/bin/activate
-make dev-install
-make test          # confirm everything works before touching real data
+pip install -e ".[dev]"
+pytest -q                      # synthetic data, no network
 
-# Download + load real OSHA data
-make download       # ITA 300A summary, 2016-2024
-make load            # unzip + load into DuckDB
-make explore         # sanity-check row counts, schema, top NAICS
+nextrecordable run-all         # download ITA files, load, build, sanity gates, train
+nextrecordable serve           # lookup page and API on http://127.0.0.1:8000
 ```
 
-See `Makefile` for all commands, or `CONTRIBUTING.md` for repo conventions
-and where to look when extending the pipeline.
+Optional enforcement features: download `osha_inspection` and `osha_violation` CSVs from the DOL enforcement data catalog (enforcedata.dol.gov, moving to data.dol.gov) into `data/raw/dol/` before `run-all`, or load them with `nextrecordable load-enforcement --inspection ... --violation ...`.
 
-## Run the test suite
+Step by step: `nextrecordable download summary`, `load`, `load-enforcement`, `build`, `sanity`, `train`, `serve`, plus `explore` and `query "SQL"`. Paths default to `./data` and `./reports`; override with `NEXTRECORDABLE_DATA_DIR`, `NEXTRECORDABLE_DB_PATH`, `NEXTRECORDABLE_MODEL_DIR`, `NEXTRECORDABLE_REPORTS_DIR`.
+
+### API
 
 ```bash
-make test      # verbose
-make test-fast # quiet, stop on first failure
+curl -X POST localhost:8000/score -H "Content-Type: application/json" \
+  -d '{"name": "Acme Forge Inc", "state": "IL", "zip_code": "61602", "street_address": "5 Mill Rd"}'
+
+curl -X POST localhost:8000/score-batch -F "file=@book_of_business.csv"
 ```
 
-The tests use synthetic OSHA-shaped fixtures (`tests/synthetic.py`,
-`tests/synthetic_enforcement.py`) — establishments with intentional pre-2023
-/ post-2023 schema drift and independently-varying injury and enforcement
-signals — and exercise the full pipeline from CSV load through model
-training and risk report generation. No network access or real data
-required to run tests.
+Batch CSVs need name, state and ZIP columns; common headers (`company`, `zip`, `address`, `st`) are recognized, and ZIPs that lost their leading zero in Excel are repaired. Limits: 5 MB and 5,000 rows per upload. Unmatched and ambiguous rows are returned separately, never silently dropped. Run one server process per database file.
 
-## Data sources
+## Read before relying on a score
 
-| Source | What | Coverage | URL |
-|---|---|---|---|
-| OSHA ITA 300A | Establishment-year injury summaries | 2016 - 2024 | [osha.gov ITA data](https://www.osha.gov/Establishment-Specific-Injury-and-Illness-Data) |
-| OSHA ITA 300/301 | Case-level details with narratives | 2023 - 2024 | same |
-| DOL Enforcement | Inspections, citations, penalties | 1973 - present | [enforcedata.dol.gov](https://enforcedata.dol.gov/views/data_catalogs.php) |
-| BLS QCEW | Employment by establishment | quarterly | (not yet integrated) |
+- OSHA injury logs undercount recordable cases; published estimates of the share missed run from roughly 30 to 70 percent, depending on industry and method. Scores predict reported cases, which also reflect how carefully an employer records them.
+- Only establishments required to file with the ITA appear; most workplaces under 20 employees don't file.
+- Training rows need a next-year filing, so establishments that stop filing (closures, falling below thresholds, non-compliance) are underrepresented.
+- Names change; one site can split into two records across years, and two sites sharing a name and ZIP are combined.
+- Zero inspections means none on record, not inspected and clean.
+- Do not republish scores about named establishments without your own legal review.
 
-## Methodological honesty
+## Data and license
 
-This is the section that will be longest in the final docs. A few things users and reviewers should know:
+ITA and DOL enforcement data are U.S. federal government works (public domain in the U.S.) and are downloaded at run time, not redistributed here. Code is Apache-2.0; see `LICENSE` and `NOTICE`. Cite with `CITATION.cff`.
 
-**Underreporting.** Multiple academic studies and BLS analyses estimate that 30 to 70 percent of OSHA-recordable injuries go unreported, with rates varying by industry. A model trained on this data partly learns reporting behavior. Treat predicted rates as "predicted REPORTED rates" unless you have independent reason to believe coverage is uniform.
+## Layout
 
-**Entity resolution is soft.** Establishment IDs are only present in recent years. Older years are matched on normalized (name, address) hashes, with expected leakage of 5 to 15 percent (same establishment appearing as two keys, or two establishments collapsing into one). Match quality metrics are produced as part of the pipeline.
+```
+nextrecordable/
+  config.py      download URLs, paths
+  download.py    cached downloads, written atomically
+  load.py        CSV -> DuckDB, every column as text
+  schema.py      canonical typed view across release years
+  normalize.py   names, addresses, ZIPs (single source of truth)
+  keys.py        establishment keys, shared by ITA and DOL
+  features.py    the establishment-year panel
+  enforcement.py DOL inspections and citations, linking, panel windows
+  match.py       fixed-weight record linkage
+  models/        binary and rate models, metrics, persistence, scores
+  report.py      per-establishment reports, vectorized batch scoring
+  sanity.py      data gates
+  pipeline.py    build, train, reports/METRICS.md
+  api.py         FastAPI app; static/index.html is the lookup page
+  cli.py         the nextrecordable command
+tests/           synthetic ITA and DOL generators plus the suite
+```
 
-**Coverage gaps.** ITA only covers establishments meeting industry-and-size thresholds. Establishments under 20 employees are largely absent. Treat absence of an ITA record as "not in scope," not "no injuries."
-
-**Calibration matters more than AUC.** A risk score that ranks well but predicts 50% when reality is 8% is useless for pricing or triage. Calibration plots by decile are produced for every model.
-
-## Pricing model (planned)
-
-| Tier | Price | Audience | Limits |
-|---|---|---|---|
-| Free | $0 | Researchers, journalists, public | Single-establishment lookup |
-| Pro | $79/mo | Independent brokers, consultants | 500 establishments/mo, PDF reports |
-| Team | $499/mo | Small carriers, broker offices | Unlimited, API, 5 seats |
-| Enterprise | Custom | Regional carriers, large brokers | Data feed, SLA, white-label |
-
-## Roadmap
-
-- [x] Project scaffolding
-- [x] Download + load pipeline with schema drift handling
-- [x] Establishment-year panel with lags and targets
-- [x] Synthetic fixture + end-to-end tests
-- [x] Baseline LightGBM model with temporal holdout and isotonic calibration
-- [x] Per-establishment risk report (JSON-shaped, ready for API/PDF)
-- [x] Enforcement data integration (DOL inspections, citations, penalties)
-- [x] Splink-based entity resolution for user-uploaded CSVs
-- [x] FastAPI endpoints (POST /score, POST /score-batch)
-- [ ] Real-data sanity notebook against 2023+2024 OSHA data
-- [ ] PDF report generation
-- [ ] Public free-tier search interface
-- [ ] Stripe billing for Pro / Team tiers
-
-## License
-
-Code is MIT — see `LICENSE`. The output (risk scores, reports) needs its own terms; do not republish the OSHA-attributed identity of specific high-risk establishments without independent legal review.
+See `CONTRIBUTING.md` for conventions and good first contributions, and `ROADMAP.md` for what's next.
