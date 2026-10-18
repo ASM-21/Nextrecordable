@@ -82,7 +82,7 @@ def score_keys(
                    p.naics_code, p.year AS latest_year, p.employees, p.n_recordable,
                    p.tcr AS current_tcr, p.dart_rate AS current_dart_rate,
                    p.naics4_tcr_median, y.n_years,
-                   s.p_any_next, s.expected_tcr_next, s.expected_cases_next,
+                   s.p_any_next, s.expected_tcr_next, s.expected_cases_next, s.experience_rated_tcr_next,
                    s.peer_pctile, s.peer_group, s.peer_count, s.overall_pctile, s.risk_band
             FROM latest p
             JOIN years y USING (estab_key)
@@ -175,8 +175,8 @@ def risk_report(
 
     if _table_exists(con, scores_table):
         srow = con.execute(
-            f"""SELECT p_any_next, expected_tcr_next, expected_cases_next, peer_pctile,
-                       peer_group, peer_count, overall_pctile, risk_band
+            f"""SELECT p_any_next, expected_tcr_next, expected_cases_next, experience_rated_tcr_next,
+                       peer_pctile, peer_group, peer_count, overall_pctile, risk_band
                 FROM {scores_table} WHERE estab_key = ?""",
             [estab_key],
         ).fetchone()
@@ -185,10 +185,10 @@ def risk_report(
     if srow is None:  # not materialized yet: score directly, without peer context
         preds = result.predict(latest)
         rate = float(preds["rate_per_hour"][0])
-        srow = (float(preds["p"][0]), rate * 200_000 if math.isfinite(rate) else None,
-                None, None, None, None, None, None)
-    score_cols = ("p_any_next", "expected_tcr_next", "expected_cases_next", "peer_pctile",
-                  "peer_group", "peer_count", "overall_pctile", "risk_band")
+        srow = (float(preds["p"][0]), rate * 200_000 if math.isfinite(rate) else None, None,
+                float(preds["baseline_rate_per_hour"][0]) * 200_000, None, None, None, None, None)
+    score_cols = ("p_any_next", "expected_tcr_next", "expected_cases_next", "experience_rated_tcr_next",
+                  "peer_pctile", "peer_group", "peer_count", "overall_pctile", "risk_band")
     scores = {k: _clean(v) for k, v in zip(score_cols, srow, strict=True)}
 
     enforcement = None

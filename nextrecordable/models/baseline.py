@@ -9,10 +9,15 @@ years <= T, early-stop and calibrate on T+1, report on T+2):
    here?", which is the loss-control question.
 
 2. Rate: expected next-year cases per 200,000 hours (expected TCR).
-   Poisson objective with log(hours worked) as an offset, so size enters as
-   exposure rather than as risk. This is the size-adjusted ranking: it lets
-   a 40-person shop and a 2,000-person plant be compared fairly, which is
-   the underwriting question. Reports rank establishments by this.
+   Poisson objective whose offset is log(hours) + log(experience-rated
+   rate), where the experience-rated rate is the classic credibility blend
+   of the establishment's own last two years with its industry's rate. Size
+   enters as exposure rather than as risk, and the trees learn multiplicative
+   corrections to the actuarial estimate. Early stopping on the validation
+   year decides how much correction the data supports; with nothing to add,
+   the model stays at the credibility estimate instead of doing worse. This
+   is the size-adjusted ranking (a 40-person shop and a 2,000-person plant
+   compare fairly), the underwriting question, and what reports rank by.
 
 Metrics are chosen so they can't flatter the models:
   * Every model is compared with a baseline a skeptic would propose: the
@@ -320,6 +325,11 @@ def baseline_rates(frame: pd.DataFrame, fallback_rate_per_hour: float) -> dict[s
     return {"industry": ind, "credibility": cred}
 
 
+def credibility_rate(frame: pd.DataFrame, fallback_rate_per_hour: float) -> np.ndarray:
+    """Experience-rated cases per hour: own two years blended with the industry rate."""
+    return baseline_rates(frame, fallback_rate_per_hour)["credibility"]
+
+
 def rate_metrics(frame: pd.DataFrame, rate_model: np.ndarray, fallback_rate_per_hour: float) -> dict:
     """Judge per-hour rate forecasts on realized next-year cases over next-year hours."""
     mask = (frame["hours_next"].fillna(0) > 0).to_numpy() & frame[COUNT_TARGET].notna().to_numpy()
@@ -370,10 +380,9 @@ class TrainResult:
     val_year: int
     test_year: int
     panel_table: str = "ita_panel"
+    # Pooled training-year cases per hour; the industry fallback inside the
+    # credibility estimate when a row has no NAICS rate.
     fallback_rate_per_hour: float = 0.0
-    # log of the training years' pooled cases per hour. Added to the offset so
-    # boosting starts at the right level instead of at a rate of 1 per hour.
-    rate_base_log: float = 0.0
     feature_names: list[str] = field(default_factory=lambda: list(ALL_FEATURES))
     categorical_features: list[str] = field(default_factory=lambda: list(CATEGORICAL_FEATURES))
     metrics: dict[str, Any] = field(default_factory=dict)
@@ -392,14 +401,15 @@ class TrainResult:
         return _matrix(frame, self.vocab, tuple(self.feature_names))
 
     def predict(self, frame: pd.DataFrame) -> dict[str, np.ndarray]:
-        """p_raw, p (calibrated) and rate_per_hour (NaN without a rate model)."""
+        """p_raw, p (calibrated), rate_per_hour, and the experience-rated baseline it adjusts."""
         X = self.matrix(frame)
         with self._lock:
             p_raw = self.binary.predict(X)
             raw_rate = self.rate.predict(X, raw_score=True) if self.rate is not None else None
         p = self.calibrator.transform(p_raw) if self.calibrator else p_raw
-        rate = np.exp(self.rate_base_log + raw_rate) if raw_rate is not None else np.full(len(frame), np.nan)
-        return {"p_raw": p_raw, "p": p, "rate_per_hour": rate}
+        cred = credibility_rate(frame, self.fallback_rate_per_hour)
+        rate = cred * np.exp(raw_rate) if raw_rate is not None else np.full(len(frame), np.nan)
+        return {"p_raw": p_raw, "p": p, "rate_per_hour": rate, "baseline_rate_per_hour": cred}
 
     def contributions(self, frame: pd.DataFrame) -> tuple[np.ndarray, str]:
         """Per-feature contributions: log-rate (rate model) or log-odds (binary)."""
@@ -468,22 +478,23 @@ def train_baseline(
         train[COUNT_TARGET].to_numpy(float)[m_tr].sum()
         / max(train["hours_worked"].to_numpy(float)[m_tr].sum(), 1.0)
     )
-    base_log = float(np.log(fallback)) if fallback > 0 else 0.0
     if rate_model and m_tr.sum() > 0 and m_va.sum() > 0 and fallback > 0:
         rparams = {**_default_params("poisson"), "metric": ["poisson"], **(lgb_params or {})}
         rparams["objective"] = "poisson"
+        cred_tr = credibility_rate(train, fallback)[m_tr]
+        cred_va = credibility_rate(val, fallback)[m_va]
         rate = _fit(
             rparams, X[m_tr], train[COUNT_TARGET].to_numpy(float)[m_tr],
             Xv[m_va], val[COUNT_TARGET].to_numpy(float)[m_va], cat_idx, list(feats),
             num_boost_round, early_stopping_rounds,
-            init=np.log(train["hours_worked"].to_numpy(float)[m_tr]) + base_log,
-            init_v=np.log(val["hours_worked"].to_numpy(float)[m_va]) + base_log,
+            init=np.log(train["hours_worked"].to_numpy(float)[m_tr]) + np.log(cred_tr),
+            init_v=np.log(val["hours_worked"].to_numpy(float)[m_va]) + np.log(cred_va),
         )
 
     result = TrainResult(
         binary=binary, calibrator=calibrator, rate=rate, vocab=vocab,
         train_through=int(train_through), val_year=int(val_year), test_year=int(test_year),
-        panel_table=panel_table, fallback_rate_per_hour=fallback, rate_base_log=base_log,
+        panel_table=panel_table, fallback_rate_per_hour=fallback,
     )
 
     metrics: dict[str, Any] = {
@@ -582,6 +593,7 @@ def materialize_scores(
         "p_any_next": nullable(preds["p"]),
         "expected_tcr_next": nullable(preds["rate_per_hour"] * RATE_DENOMINATOR),
         "expected_cases_next": nullable(preds["rate_per_hour"] * frame["hours_worked"].astype(float)),
+        "experience_rated_tcr_next": nullable(preds["baseline_rate_per_hour"] * RATE_DENOMINATOR),
         "naics_4": frame["naics_4"].fillna("").astype(str),
         "naics_2": frame["naics_2"].fillna("").astype(str),
     })
@@ -603,6 +615,7 @@ def materialize_scores(
             FROM _scores_df
         )
         SELECT estab_key, score_year, p_any_next, expected_tcr_next, expected_cases_next,
+               experience_rated_tcr_next,
                CASE WHEN n4 >= {MIN_PEERS} AND naics_4 <> '' THEN c4
                     WHEN n2 >= {MIN_PEERS} AND naics_2 <> '' THEN c2 ELSE c_all END AS peer_pctile,
                CASE WHEN n4 >= {MIN_PEERS} AND naics_4 <> '' THEN 'NAICS ' || naics_4
@@ -648,7 +661,7 @@ def save_model(result: TrainResult, dest_dir: Path) -> None:
         "test_year": result.test_year,
         "panel_table": result.panel_table,
         "fallback_rate_per_hour": result.fallback_rate_per_hour,
-        "rate_base_log": result.rate_base_log,
+        "rate_offset": "log(hours) + log(credibility rate)",
         "metrics": result.metrics,
         "calibration_table": result.calibration_table,
         "feature_importance": result.feature_importance,
@@ -674,7 +687,6 @@ def load_model(model_dir: Path) -> TrainResult:
         test_year=meta["test_year"],
         panel_table=meta.get("panel_table", "ita_panel"),
         fallback_rate_per_hour=meta.get("fallback_rate_per_hour", 0.0),
-        rate_base_log=meta.get("rate_base_log", 0.0),
         feature_names=meta["feature_names"],
         categorical_features=meta["categorical_features"],
         metrics=meta.get("metrics", {}),

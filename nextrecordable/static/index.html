@@ -217,12 +217,13 @@ function renderReport(r) {
     <p class="band">${pos}</p>
     <ul class="facts">
       <li><span>Chance of at least one recordable case in ${r.forecast_year}</span><span>${pct(r.p_any_next)}</span></li>
+      <li><span>Starting point: own last two years blended with the industry rate</span><span>${num(r.experience_rated_tcr_next)}</span></li>
       <li><span>Case rate in ${r.latest_year}</span><span>${num(r.current_year_metrics.tcr)}</span></li>
       <li><span>Industry median case rate</span><span>${num(r.current_year_metrics.naics4_tcr_median)}</span></li>
       <li><span>OSHA inspections, last two years</span><span>${enf}</span></li>
       <li><span>Confidence</span><span>${esc(r.confidence)}: ${esc(r.confidence_note)}</span></li>
     </ul>
-    <h2>What moves this estimate</h2>
+    <h2>What moves the estimate off its starting point</h2>
     <ul class="drivers">${drivers}</ul>
     <h2>Filed with OSHA</h2>
     <div class="table-wrap"><table><thead><tr><th>Year</th><th>Employees</th><th>Recordable cases</th><th>Case rate</th><th>Industry median</th></tr></thead><tbody>${rows}</tbody></table></div>
