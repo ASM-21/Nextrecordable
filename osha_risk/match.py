@@ -1,486 +1,266 @@
-"""Fuzzy entity resolution: match user-uploaded establishments to our database.
+"""Record linkage: find the establishment a name + address refers to.
 
-Use case: a broker uploads a CSV with rows like
-    "ABC Mfg Co, 123 Main Street, Springfield IL 62701"
-We need to find the corresponding `estab_key` in the ITA panel, even when:
-  - The name uses different abbreviations ("Mfg" vs "Manufacturing")
-  - Punctuation differs ("ABC, Inc." vs "ABC Inc")
-  - Address has minor typos or formatting differences
-  - ZIP is short or long form
-  - Same establishment appears under multiple historical name variants
+A small Fellegi-Sunter matcher with FIXED weights, run entirely in DuckDB.
+It replaces a per-request splink model, which had three problems: it trained
+on whatever rows a request happened to contain (one typo'd lookup trained a
+model on one row, and one-typo lookups matched 12 of 40 times), it needed
+shared temp views that broke under concurrent requests, and splink 5.0
+removed the API it was written against.
 
-The soft-hash key in features.py requires an EXACT match on normalized
-name + state + zip5. That's brittle. This module replaces that with
-probabilistic record linkage using splink, which:
-  - Blocks candidate pairs (so we don't compute n*m pairwise comparisons)
-  - Scores each candidate pair using a fitted model
-  - Returns top-k matches per input row with match probabilities
+How a match is scored
+---------------------
+Candidates share the state and either the ZIP or the first name token
+(blocking). Each candidate gets a weight in bits (log2 likelihood ratio):
 
-Output: a `match_results` table with (input_row_id, estab_key, match_probability)
-plus an unmatched residual we can fall back to soft-key for.
+  name (normalized)
+      identical +9 | one edit apart (a typo) +7 | Jaro-Winkler >= 0.92  +3
+      | >= 0.80  0 | else -8
+  numbers in the name ("plant 2", "store 1234")
+      both present, equal +2 | both present, different -12 | otherwise 0
+  ZIP  same +4 | same first 3 digits 0 | different -3 | missing 0
+  street address (both present)
+      Jaro-Winkler >= 0.95  +3 | >= 0.85  +1 | else -2
+
+match probability = 1 / (1 + 2^-(PRIOR_BITS + weight)). A row is matched
+when PRIOR_BITS + weight >= MATCH_BITS (probability 0.8) and the best
+candidate beats the runner-up by AMBIGUITY_MARGIN_BITS; a close runner-up
+makes it "ambiguous" rather than a coin flip. Some reference points:
+a one-letter typo with the right ZIP scores 3 bits (0.89); the exact name
+in a neighboring ZIP scores 1 bit (0.67, unmatched unless the street agrees);
+"Summit Castings" vs "Summit Coatings" in one ZIP scores -1 bit (0.33).
+
+Why edits and not Jaro-Winkler for the strong band: in a long name, swapping
+one word for a similar one ("Castings" -> "Coatings") still scores
+Jaro-Winkler above 0.95, the same as a typo. The match-quality harness
+caught exactly that: a lookup for a company that doesn't file came back as
+its neighbor. A typo is one edit; a different word is at least two. The weights were set by hand and checked against the
+perturbation harness in tests/test_match_quality.py, which pins per-case
+accuracy floors and hard-negative false-match ceilings.
+
+Every function takes the connection or cursor to run on. Per-request work
+uses TEMP tables, which are private to a DuckDB connection, so concurrent
+requests on separate cursors never see each other's rows.
 """
 
 from __future__ import annotations
 
-import contextlib
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import duckdb
+import pandas as pd
 
-from .normalize import normalize_address, normalize_name, zip5
+from .normalize import (
+    name_first_token,
+    name_numbers,
+    normalize_address,
+    normalize_name,
+    state_code,
+    zip5,
+)
 
-# ---------- Preparing the match dataframes ----------
+PRIOR_BITS = -8.0
+MATCH_BITS = 2.0  # log2(0.8 / 0.2): match probability 0.8
+MATCH_THRESHOLD = 0.80
+AMBIGUITY_MARGIN_BITS = 2.0
 
-# Required input columns for the user-uploaded CSV
-INPUT_COLUMNS_REQUIRED: tuple[str, ...] = ("name", "state", "zip_code")
-INPUT_COLUMNS_OPTIONAL: tuple[str, ...] = ("street_address", "city")
+WEIGHT_SQL = """
+    (CASE WHEN l_name = r_name THEN 9
+          WHEN name_dl <= 1 AND length(l_name) >= 5 THEN 7
+          WHEN name_jw >= 0.92 THEN 3 WHEN name_jw >= 0.80 THEN 0 ELSE -8 END)
+  + (CASE WHEN l_nums <> '' AND r_nums <> '' AND l_nums = r_nums THEN 2
+          WHEN l_nums <> '' AND r_nums <> '' THEN -12 ELSE 0 END)
+  + (CASE WHEN l_zip = '' OR r_zip = '' THEN 0 WHEN l_zip = r_zip THEN 4
+          WHEN substr(l_zip, 1, 3) = substr(r_zip, 1, 3) THEN 0 ELSE -3 END)
+  + (CASE WHEN l_addr = '' OR r_addr = '' THEN 0 WHEN addr_jw >= 0.95 THEN 3
+          WHEN addr_jw >= 0.85 THEN 1 ELSE -2 END)
+"""
+
+LEFT_COLUMNS = ("rec_id", "name_norm", "name_first", "name_nums", "state", "zip5", "address_norm")
 
 
-def _ensure_udfs_registered(con: duckdb.DuckDBPyConnection) -> None:
-    """Register Python normalization UDFs if not already present.
+def normalize_inputs(rows: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Normalize user rows (name, state, zip_code, optional street_address/city).
 
-    DuckDB throws NotImplementedException on re-registration, so we check
-    first. This makes the function idempotent across multiple calls in the
-    same connection (which happens in `match_uploaded_csv`).
+    Returns the linker's left-hand frame; rec_id is 1-based input order.
     """
-    existing = {
-        r[0]
-        for r in con.execute(
-            "SELECT function_name FROM duckdb_functions() "
-            "WHERE function_name IN ('py_norm_name', 'py_norm_addr', 'py_zip5')"
-        ).fetchall()
-    }
-    if "py_norm_name" not in existing:
-        con.create_function("py_norm_name", normalize_name, ["VARCHAR"], "VARCHAR")
-    if "py_norm_addr" not in existing:
-        con.create_function("py_norm_addr", normalize_address, ["VARCHAR"], "VARCHAR")
-    if "py_zip5" not in existing:
-        con.create_function("py_zip5", lambda x: zip5(x), ["VARCHAR"], "VARCHAR")
+    out: dict[str, list] = {c: [] for c in (*LEFT_COLUMNS, "original_name")}
+    for i, row in enumerate(rows, start=1):
+        name = row.get("name")
+        norm = normalize_name(name)
+        out["rec_id"].append(i)
+        out["original_name"].append("" if name is None else str(name))
+        out["name_norm"].append(norm)
+        out["name_first"].append(name_first_token(norm))
+        out["name_nums"].append(name_numbers(norm))
+        out["state"].append(state_code(row.get("state")))
+        out["zip5"].append(zip5(row.get("zip_code")))
+        out["address_norm"].append(normalize_address(row.get("street_address")))
+    return pd.DataFrame({k: pd.Series(v, dtype="int64" if k == "rec_id" else "object") for k, v in out.items()})
 
 
-def normalize_input_table(
-    con: duckdb.DuckDBPyConnection,
-    input_table: str,
-    *,
-    output_table: str = "match_input_normalized",
-) -> int:
-    """Build normalized columns on a user-uploaded input table.
-
-    The input table must have at least: name, state, zip_code.
-    Optional: street_address, city.
-
-    Adds: name_norm, address_norm, zip5, name_first_token, input_row_id.
-    """
-    cols = {
-        r[1].lower()
-        for r in con.execute(f"PRAGMA table_info('{input_table}')").fetchall()
-    }
-    for required in INPUT_COLUMNS_REQUIRED:
-        if required not in cols:
-            raise ValueError(
-                f"Input table {input_table} missing required column {required!r}. "
-                f"Required: {INPUT_COLUMNS_REQUIRED}; got: {sorted(cols)}"
-            )
-
-    _ensure_udfs_registered(con)
-
-    has_street = "street_address" in cols
-    has_city = "city" in cols
-
-    street_expr = "py_norm_addr(CAST(street_address AS VARCHAR))" if has_street else "CAST('' AS VARCHAR)"
-    city_expr = "lower(CAST(city AS VARCHAR))" if has_city else "CAST('' AS VARCHAR)"
-
-    con.execute(f"DROP TABLE IF EXISTS {output_table}")
+def load_left(con, frame: pd.DataFrame, table: str = "_match_left") -> None:
+    """Put a normalized frame into a TEMP table on `con`."""
+    con.execute(f"DROP TABLE IF EXISTS {table}")
     con.execute(
-        f"""
-        CREATE TABLE {output_table} AS
-        SELECT
-            ROW_NUMBER() OVER () AS input_row_id,
-            CAST(name AS VARCHAR)               AS original_name,
-            {('CAST(street_address AS VARCHAR)' if has_street else "CAST('' AS VARCHAR)")} AS original_address,
-            CAST(state AS VARCHAR)              AS state,
-            CAST(zip_code AS VARCHAR)           AS original_zip,
-            py_norm_name(CAST(name AS VARCHAR)) AS name_norm,
-            {street_expr}                       AS address_norm,
-            {city_expr}                         AS city_norm,
-            py_zip5(CAST(zip_code AS VARCHAR))  AS zip5,
-            -- First token of normalized name (blocking key)
-            split_part(py_norm_name(CAST(name AS VARCHAR)), ' ', 1) AS name_first_token
-        FROM {input_table}
-        """
+        f"""CREATE TEMP TABLE {table} (rec_id BIGINT, name_norm VARCHAR, name_first VARCHAR,
+            name_nums VARCHAR, state VARCHAR, zip5 VARCHAR, address_norm VARCHAR,
+            original_name VARCHAR)"""
     )
-    return con.execute(f"SELECT COUNT(*) FROM {output_table}").fetchone()[0]
+    if len(frame):
+        con.register("_match_left_df", frame)
+        con.execute(
+            f"INSERT INTO {table} SELECT rec_id, name_norm, name_first, name_nums, state, "
+            f"zip5, address_norm, original_name FROM _match_left_df"
+        )
+        con.unregister("_match_left_df")
 
 
-def build_estab_directory(
+def build_directory(
     con: duckdb.DuckDBPyConnection,
     *,
-    output_table: str = "estab_directory",
     panel_table: str = "ita_panel",
+    output: str = "estab_directory",
 ) -> int:
-    """Build a one-row-per-establishment directory from the panel.
-
-    For each estab_key, we keep:
-      - Most recent name / address / state / zip
-      - Latest year present
-      - NAICS
-
-    This is the table splink links INTO. It's what we present in match results.
-    """
-    _ensure_udfs_registered(con)
-
-    con.execute(f"DROP TABLE IF EXISTS {output_table}")
+    """One row per estab_key (latest filing): what lookups are matched against."""
+    con.execute(f"DROP TABLE IF EXISTS {output}")
     con.execute(
         f"""
-        CREATE TABLE {output_table} AS
-        WITH ranked AS (
-            SELECT
-                p.estab_key,
-                p.establishment_name,
-                p.state,
-                p.zip5,
-                p.naics_code,
-                p.year,
-                ROW_NUMBER() OVER (
-                    PARTITION BY p.estab_key
-                    ORDER BY p.year DESC
-                ) AS rn
-            FROM {panel_table} p
-            WHERE p.establishment_name IS NOT NULL
-        )
-        SELECT
-            estab_key,
-            establishment_name AS original_name,
-            state,
-            zip5,
-            naics_code,
-            year AS latest_year,
-            -- Normalized fields (computed by the same Python UDFs registered
-            -- elsewhere in this module).
-            py_norm_name(establishment_name) AS name_norm,
-            split_part(py_norm_name(establishment_name), ' ', 1) AS name_first_token
-        FROM ranked
-        WHERE rn = 1
+        CREATE TABLE {output} AS
+        SELECT estab_key, establishment_name, street_address, city, state, zip5,
+               name_norm, name_first, name_nums, coalesce(address_norm, '') AS address_norm,
+               naics_code, year AS latest_year
+        FROM {panel_table}
+        WHERE name_norm <> ''
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY estab_key ORDER BY year DESC) = 1
         """
     )
-    return con.execute(f"SELECT COUNT(*) FROM {output_table}").fetchone()[0]
+    return con.execute(f"SELECT COUNT(*) FROM {output}").fetchone()[0]
 
 
-# ---------- Splink linking ----------
-
-def _make_splink_settings():
-    """Build the splink settings for matching input -> directory.
-
-    Design notes:
-      - Link type "link_only" because the two datasets are pre-deduplicated
-        (input has unique rows; directory has one row per estab_key).
-      - Blocking: candidates must share state + ZIP5, OR state + name first
-        token. This keeps pair count tractable on large directories.
-      - Comparisons: JaroWinkler on normalized name (the strongest signal),
-        ExactMatch on ZIP5, ExactMatch on state. We don't compare address
-        (high noise, weak signal) but that's an easy extension.
-    """
-    import splink.comparison_library as cl
-    from splink import SettingsCreator, block_on
-
-    return SettingsCreator(
-        link_type="link_only",
-        blocking_rules_to_generate_predictions=[
-            block_on("state", "zip5"),
-            block_on("state", "name_first_token"),
-        ],
-        comparisons=[
-            cl.JaroWinklerAtThresholds("name_norm", [0.95, 0.85, 0.7]),
-            cl.ExactMatch("zip5"),
-            cl.ExactMatch("state"),
-        ],
-        retain_intermediate_calculation_columns=False,
-        retain_matching_columns=True,
-    )
-
-
-def link_input_to_directory(
-    con: duckdb.DuckDBPyConnection,
+def link(
+    con,
     *,
-    input_table: str = "match_input_normalized",
-    directory_table: str = "estab_directory",
-    output_table: str = "match_results",
-    match_threshold: float = 0.80,
-    deterministic_for_em: bool | None = None,
-) -> int:
-    """Run splink linkage and write top match per input row to output_table.
-
-    Args:
-        match_threshold: minimum match_probability to keep a result.
-            Below this we consider the row "unmatched" and fall back to
-            the deterministic soft-key.
-        deterministic_for_em: if True, use a deterministic rule for EM
-            training (faster, less accurate). Defaults to True on small
-            datasets where probabilistic EM is unstable.
-
-    Returns the number of input rows with a confident match.
-    """
-    from splink import DuckDBAPI, Linker, block_on
-
-    # Clean up any splink-registered tables/views from a prior run on the
-    # same connection. Splink uses aliases like 'input', 'directory', plus
-    # various __splink__* intermediate objects, registered as views.
-    for alias in ("input", "directory"):
-        con.execute(f"DROP VIEW IF EXISTS {alias}")
-        con.execute(f"DROP TABLE IF EXISTS {alias}")
-    leftovers = con.execute(
-        "SELECT table_name, table_type FROM information_schema.tables "
-        "WHERE table_name LIKE '__splink__%'"
-    ).fetchall()
-    for name, kind in leftovers:
-        if kind == "VIEW":
-            con.execute(f"DROP VIEW IF EXISTS {name}")
-        else:
-            con.execute(f"DROP TABLE IF EXISTS {name}")
-
-    db_api = DuckDBAPI(connection=con)
-
-    # Pull the two tables as DataFrames for splink. Splink requires:
-    #   1. A `unique_id` column on each input dataset
-    #   2. Matching schemas across the two datasets
-    # We project to the splink-relevant columns plus original_estab_key
-    # (carried so we can map back after linkage).
-    input_df = con.execute(
-        f"""
-        SELECT
-            input_row_id AS unique_id,
-            name_norm,
-            name_first_token,
-            state,
-            zip5
-        FROM {input_table}
-        """
-    ).df()
-    dir_df = con.execute(
-        f"""
-        SELECT
-            estab_key AS unique_id,
-            name_norm,
-            name_first_token,
-            state,
-            zip5
-        FROM {directory_table}
-        """
-    ).df()
-
-    if deterministic_for_em is None:
-        # On tiny datasets, EM is unstable. Use deterministic estimation.
-        deterministic_for_em = len(dir_df) < 5000
-
-    settings = _make_splink_settings()
-    linker = Linker(
-        [input_df, dir_df],
-        settings,
-        db_api=db_api,
-        input_table_aliases=["input", "directory"],
-    )
-
-    # Scale max_pairs to the actual dataset size. Splink hits an internal
-    # "salting partitions" error when max_pairs is much larger than the
-    # number of pairs available to sample from.
-    max_pairs_for_u = max(1e4, min(1e6, len(input_df) * len(dir_df) * 0.5))
-
-    # Training:
-    #   1. Prior on match probability via a strict deterministic rule
-    #   2. u (probability of agreement among non-matches) via random sampling
-    #   3. m (probability of agreement among matches) via EM, optional
-    #
-    # Each step is wrapped in try/except because splink hits internal bugs on
-    # very small datasets (e.g. "Salting partitions must be > 1" during
-    # random-sample u-estimation when the candidate pair count is degenerate).
-    # When training steps fail, splink falls back to default values for the
-    # untrained parameters; predictions are still produced and remain useful
-    # for our threshold-based downstream logic.
-    with contextlib.suppress(Exception):
-        linker.training.estimate_probability_two_random_records_match(
-            deterministic_matching_rules=[
-                block_on("state", "zip5", "name_first_token")
-            ],
-            recall=0.9,
-        )
-
-    with contextlib.suppress(Exception):
-        linker.training.estimate_u_using_random_sampling(max_pairs=max_pairs_for_u)
-
-    if not deterministic_for_em:
-        with contextlib.suppress(Exception):
-            linker.training.estimate_parameters_using_expectation_maximisation(
-                block_on("state", "zip5")
-            )
-
-    predictions = linker.inference.predict(threshold_match_probability=0.01)
-    pred_df = predictions.as_pandas_dataframe()
-
-    # Register predictions back in duckdb and keep top-1 match per input row
-    con.register("splink_predictions_raw", pred_df)
-    con.execute(f"DROP TABLE IF EXISTS {output_table}")
-
-    if len(pred_df) == 0:
-        # No predictions at all; create an empty result table with the expected schema
-        con.execute(
-            f"""
-            CREATE TABLE {output_table} (
-                input_row_id BIGINT,
-                matched_estab_key VARCHAR,
-                match_probability DOUBLE,
-                is_confident BOOLEAN
-            )
-            """
-        )
-    else:
-        # Splink may put the input dataset on the L or R side depending on
-        # internal ordering. We use source_dataset_l/r to disambiguate.
-        con.execute(
-            f"""
-            CREATE TABLE {output_table} AS
-            WITH normalized_pairs AS (
-                SELECT
-                    CASE WHEN source_dataset_l = 'input' THEN unique_id_l ELSE unique_id_r END
-                        AS input_unique_id,
-                    CASE WHEN source_dataset_l = 'directory' THEN unique_id_l ELSE unique_id_r END
-                        AS dir_unique_id,
-                    match_probability
-                FROM splink_predictions_raw
-            ),
-            ranked AS (
-                SELECT
-                    CAST(input_unique_id AS BIGINT) AS input_row_id,
-                    CAST(dir_unique_id AS VARCHAR)  AS matched_estab_key,
-                    match_probability,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY input_unique_id
-                        ORDER BY match_probability DESC
-                    ) AS rn
-                FROM normalized_pairs
-            )
-            SELECT
-                input_row_id,
-                matched_estab_key,
-                match_probability,
-                match_probability >= {match_threshold} AS is_confident
-            FROM ranked
-            WHERE rn = 1
-            """
-        )
-    con.unregister("splink_predictions_raw")
-
-    return con.execute(
-        f"SELECT COUNT(*) FROM {output_table} WHERE is_confident"
-    ).fetchone()[0]
-
-
-def fallback_softkey_match(
-    con: duckdb.DuckDBPyConnection,
-    *,
-    input_table: str = "match_input_normalized",
-    directory_table: str = "estab_directory",
-    match_results_table: str = "match_results",
-    output_table: str = "match_final",
+    left: str = "_match_left",
+    directory: str = "estab_directory",
+    output: str = "_match_best",
+    candidates_output: str | None = "_match_candidates",
+    match_bits: float = MATCH_BITS,
+    temp: bool = True,
 ) -> dict[str, int]:
-    """Combine splink matches with a deterministic soft-key fallback.
+    """Score candidate pairs and keep the best per left row.
 
-    IMPORTANT: the softkey hash here MUST match the hash used in
-    features.build_establishment_key_view, or the join will silently return
-    zero matches. We replicate the same SQL regex normalization (strip
-    non-alphanumeric, lowercase) rather than using the Python normalize_name
-    UDF, since Python normalization ALSO strips entity suffixes and would
-    produce a different hash than what's in the panel.
-
-    Returns counts of each match method.
+    `output` gets one row per left rec_id: best estab_key (NULL if no
+    candidate), weight, probability, runner-up weight and status in
+    {'matched', 'ambiguous', 'unmatched'}. When `candidates_output` is set it
+    keeps every scored pair (for "did you mean" suggestions).
+    Returns counts by status.
     """
-    con.execute(f"DROP TABLE IF EXISTS {output_table}")
+    kind = "TEMP TABLE" if temp else "TABLE"
+    con.execute("DROP TABLE IF EXISTS _match_pairs")
     con.execute(
         f"""
-        CREATE TABLE {output_table} AS
-        WITH softkey_attempts AS (
-            SELECT
-                i.input_row_id,
-                md5(concat_ws(
-                    '|',
-                    regexp_replace(lower(coalesce(i.original_name, '')), '[^a-z0-9 ]', '', 'g'),
-                    upper(coalesce(i.state, '')),
-                    coalesce(i.zip5, '')
-                )) AS computed_key
-            FROM {input_table} i
-        ),
-        softkey_matches AS (
-            SELECT
-                s.input_row_id,
-                d.estab_key AS matched_estab_key,
-                1.0 AS match_probability,
-                'softkey_exact' AS match_method
-            FROM softkey_attempts s
-            JOIN {directory_table} d ON d.estab_key = s.computed_key
-        ),
-        splink_confident AS (
-            SELECT
-                input_row_id,
-                matched_estab_key,
-                match_probability,
-                'splink_fuzzy' AS match_method
-            FROM {match_results_table}
-            WHERE is_confident
-        ),
-        combined AS (
-            -- Splink takes precedence for confident matches
-            SELECT * FROM splink_confident
-            UNION ALL
-            SELECT s.* FROM softkey_matches s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM splink_confident sc WHERE sc.input_row_id = s.input_row_id
-            )
-        ),
-        all_inputs AS (
-            SELECT input_row_id FROM {input_table}
+        CREATE TEMP TABLE _match_pairs AS
+        SELECT l.rec_id, d.estab_key
+        FROM {left} l JOIN {directory} d
+          ON l.state = d.state AND l.zip5 = d.zip5
+        WHERE l.zip5 <> '' AND l.name_norm <> ''
+        UNION
+        SELECT l.rec_id, d.estab_key
+        FROM {left} l JOIN {directory} d
+          ON l.state = d.state AND l.name_first = d.name_first
+        WHERE l.name_first <> ''
+        """
+    )
+    scored_sql = f"""
+        SELECT rec_id, estab_key, name_jw, name_dl, addr_jw, ({WEIGHT_SQL}) AS weight
+        FROM (
+            SELECT p.rec_id, p.estab_key,
+                   jaro_winkler_similarity(l.name_norm, d.name_norm) AS name_jw,
+                   damerau_levenshtein(l.name_norm, d.name_norm) AS name_dl,
+                   l.name_norm AS l_name, d.name_norm AS r_name,
+                   CASE WHEN l.address_norm <> '' AND d.address_norm <> ''
+                        THEN jaro_winkler_similarity(l.address_norm, d.address_norm) END AS addr_jw,
+                   l.name_nums AS l_nums, d.name_nums AS r_nums,
+                   l.zip5 AS l_zip, d.zip5 AS r_zip,
+                   l.address_norm AS l_addr, d.address_norm AS r_addr
+            FROM _match_pairs p
+            JOIN {left} l USING (rec_id)
+            JOIN {directory} d USING (estab_key)
         )
-        SELECT
-            a.input_row_id,
-            c.matched_estab_key,
-            c.match_probability,
-            COALESCE(c.match_method, 'unmatched') AS match_method
-        FROM all_inputs a
-        LEFT JOIN combined c USING (input_row_id)
-        """
-    )
-
-    counts = con.execute(
-        f"""
-        SELECT match_method, COUNT(*) FROM {output_table}
-        GROUP BY match_method ORDER BY match_method
-        """
-    ).fetchall()
-    return {method: int(n) for method, n in counts}
-
-
-# ---------- High-level convenience ----------
-
-def match_uploaded_csv(
-    con: duckdb.DuckDBPyConnection,
-    input_table: str,
-    *,
-    panel_table: str = "ita_panel",
-    match_threshold: float = 0.80,
-) -> dict[str, Any]:
-    """End-to-end: normalize input, build directory, link, fall back to softkey.
-
-    Returns a dict with table names and counts. The final per-row results
-    are in `match_final`.
     """
-    n_input = normalize_input_table(con, input_table)
-    n_directory = build_estab_directory(con, panel_table=panel_table)
-    n_confident = link_input_to_directory(
-        con, match_threshold=match_threshold
+    if candidates_output:
+        con.execute(f"DROP TABLE IF EXISTS {candidates_output}")
+        con.execute(f"CREATE {kind} {candidates_output} AS {scored_sql}")
+        source = candidates_output
+    else:
+        con.execute("DROP TABLE IF EXISTS _match_scored")
+        con.execute(f"CREATE TEMP TABLE _match_scored AS {scored_sql}")
+        source = "_match_scored"
+
+    prob = f"1.0 / (1.0 + pow(2.0, -({PRIOR_BITS} + weight)))"
+    con.execute(f"DROP TABLE IF EXISTS {output}")
+    con.execute(
+        f"""
+        CREATE {kind} {output} AS
+        WITH ranked AS (
+            SELECT rec_id, estab_key, weight, name_jw,
+                   ROW_NUMBER() OVER (PARTITION BY rec_id ORDER BY weight DESC, name_jw DESC, estab_key) AS rk,
+                   LEAD(weight) OVER (PARTITION BY rec_id ORDER BY weight DESC, name_jw DESC, estab_key) AS runner_up
+            FROM {source}
+        ),
+        best AS (SELECT * FROM ranked WHERE rk = 1)
+        SELECT
+            l.rec_id,
+            b.estab_key,
+            b.weight,
+            b.runner_up,
+            CASE WHEN b.weight IS NULL THEN 0.0 ELSE {prob} END AS match_probability,
+            CASE
+                WHEN b.weight IS NULL OR {PRIOR_BITS} + b.weight < {match_bits} THEN 'unmatched'
+                WHEN b.runner_up IS NOT NULL AND b.weight - b.runner_up < {AMBIGUITY_MARGIN_BITS}
+                    THEN 'ambiguous'
+                ELSE 'matched'
+            END AS status
+        FROM {left} l LEFT JOIN best b USING (rec_id)
+        """
     )
-    method_counts = fallback_softkey_match(con)
-    return {
-        "n_input_rows": n_input,
-        "n_directory": n_directory,
-        "n_splink_confident": n_confident,
-        "method_counts": method_counts,
-        "final_table": "match_final",
-    }
+    for t in ("_match_pairs", "_match_scored"):
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+    rows = con.execute(f"SELECT status, COUNT(*) FROM {output} GROUP BY 1").fetchall()
+    return {s: int(n) for s, n in rows}
+
+
+def suggestions(con, rec_id: int, *, candidates: str = "_match_candidates",
+                directory: str = "estab_directory", k: int = 3) -> list[dict[str, Any]]:
+    """Top-k scored candidates for one input row, for "did you mean" responses."""
+    prob = f"1.0 / (1.0 + pow(2.0, -({PRIOR_BITS} + c.weight)))"
+    rows = con.execute(
+        f"""
+        SELECT d.establishment_name, d.street_address, d.city, d.state, d.zip5, {prob}
+        FROM {candidates} c JOIN {directory} d USING (estab_key)
+        WHERE c.rec_id = ?
+        ORDER BY c.weight DESC, c.name_jw DESC
+        LIMIT {int(k)}
+        """,
+        [rec_id],
+    ).fetchall()
+    keys = ("establishment_name", "street_address", "city", "state", "zip5", "match_probability")
+    return [dict(zip(keys, r, strict=True)) for r in rows]
+
+
+def match_rows(con, rows: Iterable[Mapping[str, Any]], *, directory: str = "estab_directory") -> pd.DataFrame:
+    """Normalize and link user rows. Returns one row per input with match fields.
+
+    Runs on `con`'s TEMP namespace; pass a per-request cursor from a server.
+    """
+    frame = normalize_inputs(rows)
+    load_left(con, frame)
+    link(con, directory=directory)
+    return con.execute(
+        """
+        SELECT l.rec_id, l.original_name, b.estab_key, b.match_probability, b.status
+        FROM _match_left l JOIN _match_best b USING (rec_id)
+        ORDER BY l.rec_id
+        """
+    ).df()

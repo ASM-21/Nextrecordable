@@ -1,205 +1,132 @@
-"""Tests for the FastAPI scoring API.
-
-Uses FastAPI's TestClient against an app built via create_app() with a
-synthetic in-memory database and a model trained on synthetic data. No
-network access, no real OSHA data, no env vars required.
-"""
+"""API: lookups, batch uploads, limits, and correctness under concurrency."""
 
 from __future__ import annotations
 
 import io
+import warnings
+from concurrent.futures import ThreadPoolExecutor
 
-import duckdb
 import pytest
-from fastapi.testclient import TestClient
 
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    from fastapi.testclient import TestClient
+
+from osha_risk import api as api_module
 from osha_risk.api import create_app
-from osha_risk.enforcement import (
-    add_soft_key_to_inspections,
-    attach_enforcement_to_panel,
-    build_enforcement_aggregates,
-    load_inspection_csv,
-    load_violation_csv,
-)
-from osha_risk.features import build_establishment_key_view, build_panel
-from osha_risk.load import load_summary_csv
-from osha_risk.models.baseline import train_baseline
-from osha_risk.schema import build_canonical_view
-
-from .synthetic import build_establishments, build_synthetic_dataset
-from .synthetic_enforcement import build_synthetic_enforcement
 
 
 @pytest.fixture(scope="module")
-def api_client(tmp_path_factory):
-    """Build a synthetic DB + trained model, wrap in a TestClient."""
-    root = tmp_path_factory.mktemp("api_data")
-
-    csvs = build_synthetic_dataset(root / "ita", n_establishments=800)
-    con = duckdb.connect(str(root / "test.duckdb"))
-    for year, p in csvs.items():
-        load_summary_csv(p, year, con)
-    build_canonical_view(con)
-    build_establishment_key_view(con)
-    build_panel(con)
-
-    insp_csv, viol_csv = build_synthetic_enforcement(root / "enf", n_establishments=800)
-    load_inspection_csv(con, insp_csv)
-    load_violation_csv(con, viol_csv)
-    add_soft_key_to_inspections(con)
-    build_enforcement_aggregates(con)
-    attach_enforcement_to_panel(con)
-
-    model = train_baseline(
-        con, train_through=2021, panel_table="ita_panel_enforced", num_boost_round=100
-    )
-
-    app = create_app(con, model, panel_table="ita_panel_enforced")
-    client = TestClient(app)
-
-    # Keep establishments handy for building requests
-    estabs = build_establishments(n=800, seed=42)
-
-    yield client, con, estabs
-    con.close()
+def client(world):
+    return TestClient(create_app(world["con"], world["result"]))
 
 
-def test_health(api_client):
-    client, _, _ = api_client
-    resp = client.get("/health")
-    assert resp.status_code == 200
-    body = resp.json()
+def _csv(lines):
+    return {"file": ("book.csv", io.BytesIO("\n".join(lines).encode()), "text/csv")}
+
+
+def test_health(client):
+    body = client.get("/health").json()
     assert body["status"] == "ok"
-    assert body["panel_table"] == "ita_panel_enforced"
-    assert "model_test_auc" in body
+    assert body["model_test_year"] == 2023
+    assert body["test_auc"] is not None
 
 
-def test_score_exact_match(api_client):
-    """Scoring an establishment with its exact ITA name/address should succeed."""
-    client, _, estabs = api_client
-    est = estabs[0]
-
-    resp = client.post(
-        "/score",
-        json={
-            "name": est["establishment_name"],
-            "street_address": est["street_address"],
-            "city": est["city"],
-            "state": est["state"],
-            "zip_code": est["zip_code"],
-        },
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-
-    assert body["establishment_name"] == est["establishment_name"]
-    assert 0 <= body["risk_score_next_year"] <= 1
-    assert "risk_drivers" in body
-    assert "caveats" in body
-    assert body["match_info"]["match_method"] in ("softkey_exact", "splink_fuzzy")
+def test_index_page(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "<form" in r.text
 
 
-def test_score_fuzzy_match(api_client):
-    """A messy name variant should still resolve via splink."""
-    client, _, estabs = api_client
-    est = estabs[10]
-
-    messy_name = (
-        est["establishment_name"]
-        .replace("Manufacturing Inc", "Mfg, Inc.")
-        .replace("Manufacturing, LLC", "MFG LLC")
-    )
-
-    resp = client.post(
-        "/score",
-        json={
-            "name": messy_name,
-            "street_address": est["street_address"],
-            "state": est["state"],
-            "zip_code": f"{est['zip_code']}-1234",
-        },
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["establishment_name"] == est["establishment_name"]
+def test_score_exact(client, world):
+    e = world["estabs"][0]
+    r = client.post("/score", json={"name": e["establishment_name"], "state": e["state"],
+                                    "zip_code": e["zip_code"], "street_address": e["street_address"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["establishment_name"] == e["establishment_name"]
+    assert 0 < body["p_any_next"] < 1
+    assert body["expected_tcr_next"] > 0
+    assert 0 < body["peer_pctile"] <= 1
+    assert body["risk_band"]
+    assert body["risk_drivers"] and all("label" in d for d in body["risk_drivers"])
+    assert body["caveats"]
+    assert body["match_info"]["match_status"] == "matched"
 
 
-def test_score_no_match_returns_404(api_client):
-    client, _, _ = api_client
-    resp = client.post(
-        "/score",
-        json={
-            "name": "Totally Fake Nonexistent Company XYZ",
-            "state": "ZZ",
-            "zip_code": "00000",
-        },
-    )
-    assert resp.status_code == 404
-    body = resp.json()
-    assert body["detail"]["error"] == "no_match"
+def test_score_typo_and_lost_zip_zero(client, world):
+    e = next(x for x in world["estabs"] if x["zip_code"].startswith("0"))
+    name = e["establishment_name"]
+    words = name.split()
+    i = next(k for k, w in enumerate(words) if len(w) >= 5)
+    w = words[i]
+    words[i] = w[:2] + w[3] + w[2] + w[4:]  # swap two adjacent letters
+    typo = " ".join(words)
+    r = client.post("/score", json={"name": typo, "state": e["state"], "zip_code": str(int(e["zip_code"]))})
+    assert r.status_code == 200
+    assert r.json()["establishment_name"] == name
 
 
-def test_score_missing_required_field(api_client):
-    client, _, _ = api_client
-    # Missing 'state', which is required
-    resp = client.post("/score", json={"name": "Foo Inc", "zip_code": "12345"})
-    assert resp.status_code == 422  # pydantic validation error
+def test_no_match_returns_404_with_candidates(client, world):
+    e = world["estabs"][1]
+    r = client.post("/score", json={"name": "Zzyzx Unrelated Holdings", "state": e["state"], "zip_code": e["zip_code"]})
+    assert r.status_code == 404
+    detail = r.json()["detail"]
+    assert detail["error"] == "no_match"
+    assert isinstance(detail["candidates"], list)
 
 
-def test_score_batch_csv(api_client):
-    client, _, estabs = api_client
-
-    csv_lines = ["name,street_address,state,zip_code"]
-    for est in estabs[:15]:
-        csv_lines.append(
-            f'"{est["establishment_name"]}","{est["street_address"]}",'
-            f'{est["state"]},{est["zip_code"]}'
-        )
-    # Add a couple fakes
-    csv_lines.append('"Fake Co A",999 Nowhere St,ZZ,00000')
-    csv_lines.append('"Fake Co B",888 Nowhere Ave,ZZ,00001')
-    csv_content = "\n".join(csv_lines)
-
-    resp = client.post(
-        "/score-batch",
-        files={"file": ("upload.csv", io.BytesIO(csv_content.encode()), "text/csv")},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-
-    assert body["summary"]["n_input_rows"] == 17
-    assert body["summary"]["n_matched"] >= 14  # allow 1 edge case
-    assert body["summary"]["n_unmatched"] <= 3
-
-    # Results should be sorted descending by risk score
-    scores = [r["risk_score_next_year"] for r in body["results"]]
-    assert scores == sorted(scores, reverse=True)
-
-    # Each result has the expected shape
-    if body["results"]:
-        r = body["results"][0]
-        for key in (
-            "input_row_id", "input_name", "estab_key", "establishment_name",
-            "risk_score_next_year", "confidence", "current_tcr",
-        ):
-            assert key in r
+def test_validation(client):
+    assert client.post("/score", json={"name": "Foo Inc", "zip_code": "12345"}).status_code == 422
+    assert client.post("/score", json={"name": "", "state": "IL", "zip_code": "12345"}).status_code == 422
 
 
-def test_score_batch_rejects_non_csv(api_client):
-    client, _, _ = api_client
-    resp = client.post(
-        "/score-batch",
-        files={"file": ("upload.txt", io.BytesIO(b"not a csv"), "text/plain")},
-    )
-    assert resp.status_code == 400
+def test_concurrent_lookups_return_the_right_establishment(client, world):
+    """Regression: with one shared connection and shared match tables, 120
+    concurrent lookups returned 18 wrong establishments and 100 errors."""
+    sample = world["estabs"][:120]
+
+    def call(e):
+        r = client.post("/score", json={"name": e["establishment_name"], "state": e["state"], "zip_code": e["zip_code"]})
+        return r.status_code, r.json().get("establishment_name")
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        results = list(ex.map(call, sample))
+    assert results == [(200, e["establishment_name"]) for e in sample]
 
 
-def test_score_batch_rejects_missing_columns(api_client):
-    client, _, _ = api_client
-    csv_content = "company,location\nAcme,Somewhere"
-    resp = client.post(
-        "/score-batch",
-        files={"file": ("upload.csv", io.BytesIO(csv_content.encode()), "text/csv")},
-    )
-    assert resp.status_code == 400
-    assert "missing required" in resp.json()["detail"].lower()
+def test_batch_with_messy_headers_and_excel_zips(client, world):
+    sample = world["estabs"][:60]
+    lines = ["Company,Address,ST,Zip"] + [
+        f'"{e["establishment_name"]}","{e["street_address"]}",{e["state"]},{int(e["zip_code"])}' for e in sample
+    ] + ['"Nobody Here Inc","1 Nowhere Rd",IL,60601']
+    r = client.post("/score-batch", files=_csv(lines))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["summary"]["n_input_rows"] == 61
+    assert body["summary"]["n_matched"] == 60
+    assert body["unmatched"] == [{"input_row": 61, "input_name": "Nobody Here Inc", "reason": "unmatched"}]
+    rates = [x["expected_tcr_next"] for x in body["results"]]
+    assert rates == sorted(rates, reverse=True)
+
+
+def test_batch_and_single_lookup_agree(client, world):
+    e = world["estabs"][5]
+    single = client.post("/score", json={"name": e["establishment_name"], "state": e["state"],
+                                         "zip_code": e["zip_code"]}).json()
+    batch = client.post("/score-batch", files=_csv(
+        ["name,state,zip_code", f'"{e["establishment_name"]}",{e["state"]},{e["zip_code"]}'])).json()
+    row = batch["results"][0]
+    for k in ("p_any_next", "expected_tcr_next", "peer_pctile", "risk_band", "estab_key"):
+        assert row[k] == single[k]
+
+
+def test_batch_rejections(client, monkeypatch):
+    assert client.post("/score-batch", files={"file": ("x.txt", io.BytesIO(b"a"), "text/plain")}).status_code == 400
+    r = client.post("/score-batch", files=_csv(["company,location", "Acme,Somewhere"]))
+    assert r.status_code == 400 and "missing required" in r.json()["detail"].lower()
+    monkeypatch.setattr(api_module, "MAX_BATCH_ROWS", 3)
+    rows = ["name,state,zip_code"] + ["Acme,IL,60601"] * 4
+    assert client.post("/score-batch", files=_csv(rows)).status_code == 413
+    monkeypatch.setattr(api_module, "MAX_UPLOAD_BYTES", 50)
+    assert client.post("/score-batch", files=_csv(["name,state,zip_code"] + ["Acme Widgets,IL,60601"] * 5)).status_code == 413

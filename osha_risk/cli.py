@@ -1,48 +1,56 @@
-"""Command-line interface for the osha_risk pipeline.
+"""Command-line interface.
 
-Usage:
-    python -m osha_risk.cli download summary
-    python -m osha_risk.cli download summary --year 2024 --year 2023
-    python -m osha_risk.cli download case-detail
-    python -m osha_risk.cli load
-    python -m osha_risk.cli explore
-    python -m osha_risk.cli query "SELECT data_year, COUNT(*) FROM ita_summary GROUP BY 1"
+    nextrecordable run-all              download -> load -> build -> sanity -> train
+    nextrecordable download summary [--year 2024 ...]
+    nextrecordable load
+    nextrecordable load-enforcement --inspection osha_inspection.csv --violation osha_violation.csv
+    nextrecordable build
+    nextrecordable sanity
+    nextrecordable train
+    nextrecordable serve
+    nextrecordable explore | query "SQL"
+
+Global options: --db PATH (default data/nextrecordable.duckdb).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from .config import DB_PATH, ITA_CASE_DETAIL_URLS, ITA_SUMMARY_URLS
+from . import config
 from .download import download_ita_case_detail, download_ita_summary
 from .load import connect, load_all_summary
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+app = typer.Typer(no_args_is_help=True, add_completion=False, help="Establishment injury risk from OSHA data.")
 download_app = typer.Typer(no_args_is_help=True)
-app.add_typer(download_app, name="download", help="Download raw data from OSHA")
-
+app.add_typer(download_app, name="download", help="Download raw files from OSHA.")
 console = Console()
+STATE: dict[str, Path] = {"db": config.DB_PATH}
 
 
-# ---------- download subcommands ----------
+@app.callback()
+def main(db: Annotated[Path, typer.Option("--db", help="DuckDB file")] = config.DB_PATH) -> None:
+    STATE["db"] = db
+
+
+def _con(read_only: bool = False):
+    return connect(STATE["db"], read_only=read_only)
+
 
 @download_app.command("summary")
 def download_summary(
-    year: Annotated[
-        list[int] | None,
-        typer.Option("--year", "-y", help="Specific year(s). Repeat for multiple. Default: all available."),
-    ] = None,
-    force: Annotated[bool, typer.Option("--force", help="Re-download even if file exists")] = False,
+    year: Annotated[list[int] | None, typer.Option("--year", "-y", help="Year(s); default all")] = None,
+    force: Annotated[bool, typer.Option("--force")] = False,
 ):
-    """Download ITA Form 300A summary data."""
-    years = year or sorted(ITA_SUMMARY_URLS)
-    console.print(f"[bold]Downloading summary years:[/bold] {years}")
+    """ITA Form 300A summary files."""
+    years = year or sorted(config.ITA_SUMMARY_URLS)
     paths = download_ita_summary(years=years, force=force)
-    console.print(f"[green]Downloaded {len(paths)} files[/green]")
+    console.print(f"[green]{len(paths)} files in {config.RAW_DIR / 'ita_summary'}[/green]")
 
 
 @download_app.command("case-detail")
@@ -50,98 +58,162 @@ def download_case_detail(
     year: Annotated[list[int] | None, typer.Option("--year", "-y")] = None,
     force: Annotated[bool, typer.Option("--force")] = False,
 ):
-    """Download ITA Form 300/301 case detail data (2023+ only)."""
-    years = year or sorted(ITA_CASE_DETAIL_URLS)
-    console.print(f"[bold]Downloading case-detail years:[/bold] {years}")
-    paths = download_ita_case_detail(years=years, force=force)
-    console.print(f"[green]Downloaded {len(paths)} files[/green]")
+    """ITA Form 300/301 case detail files (2023+)."""
+    paths = download_ita_case_detail(years=year or sorted(config.ITA_CASE_DETAIL_URLS), force=force)
+    console.print(f"[green]{len(paths)} files[/green]")
 
-
-# ---------- load ----------
 
 @app.command()
 def load():
-    """Extract downloaded zips and load CSVs into DuckDB."""
-    with connect() as con:
+    """Extract downloaded ITA zips and load them (all columns as text)."""
+    with _con() as con:
         counts = load_all_summary(con)
-    console.print(f"\n[green]Loaded {sum(counts.values()):,} total rows across {len(counts)} years[/green]")
-    console.print(f"DuckDB at: {DB_PATH}")
+    console.print(f"[green]{sum(counts.values()):,} rows across {len(counts)} years -> {STATE['db']}[/green]")
 
 
-# ---------- explore ----------
+@app.command("load-enforcement")
+def load_enforcement(
+    inspection: Annotated[Path, typer.Option(help="DOL osha_inspection CSV")],
+    violation: Annotated[Path, typer.Option(help="DOL osha_violation CSV")],
+):
+    """Load DOL enforcement CSVs (download them from the DOL enforcement catalog)."""
+    from .enforcement import load_inspection_csv, load_violation_csv
+
+    with _con() as con:
+        n_i = load_inspection_csv(con, inspection)
+        n_v = load_violation_csv(con, violation)
+    console.print(f"[green]{n_i:,} inspections, {n_v:,} violations[/green]")
+
+
+@app.command()
+def build(no_enforcement: Annotated[bool, typer.Option("--no-enforcement")] = False):
+    """Canonical view, keys, panel, match directory (and enforcement if loaded)."""
+    from .pipeline import build as run_build
+
+    with _con() as con:
+        out = run_build(con, enforcement=False if no_enforcement else None)
+    for k, v in out.items():
+        console.print(f"  {k}: {v}")
+
+
+def _print_gates(gates) -> bool:
+    t = Table("gate", "status", "value", "rule")
+    colors = {"pass": "green", "warn": "yellow", "fail": "red", "skip": "dim"}
+    for g in gates:
+        val = "" if g.value is None else (f"{g.value:,.3f}" if isinstance(g.value, float) else f"{g.value:,}")
+        t.add_row(g.name, f"[{colors[g.status]}]{g.status}[/]", val, g.rule)
+    console.print(t)
+    return not any(g.status == "fail" for g in gates)
+
+
+@app.command()
+def sanity(min_rows_per_year: Annotated[int, typer.Option()] = 1_000):
+    """Data gates. Exits 1 if any gate fails."""
+    from .sanity import run_gates
+
+    with _con(read_only=True) as con:
+        ok = _print_gates(run_gates(con, min_rows_per_year=min_rows_per_year))
+    raise typer.Exit(0 if ok else 1)
+
+
+@app.command()
+def train(
+    rounds: Annotated[int, typer.Option(help="Max boosting rounds")] = 500,
+    panel: Annotated[str | None, typer.Option(help="Panel table (default: enforced if built)")] = None,
+):
+    """Train, save the model, score every establishment, write reports/."""
+    from .pipeline import train as run_train
+
+    with _con() as con:
+        result = run_train(con, model_dir=config.MODEL_DIR, reports_dir=config.REPORTS_DIR,
+                           panel_table=panel, num_boost_round=rounds)
+    console.print(f"[green]Model -> {config.MODEL_DIR}; report -> {config.REPORTS_DIR / 'METRICS.md'}[/green]")
+    tb = result.metrics.get("test_binary", {})
+    console.print(f"  test year {result.test_year}: AUC {tb.get('auc', float('nan')):.3f} "
+                  f"(size+NAICS baseline {tb.get('baseline_auc', float('nan')):.3f})")
+
+
+@app.command("run-all")
+def run_all(
+    skip_download: Annotated[bool, typer.Option("--skip-download")] = False,
+    rounds: Annotated[int, typer.Option()] = 500,
+    force: Annotated[bool, typer.Option("--force", help="Train even if a sanity gate fails")] = False,
+):
+    """Everything: download, load, (DOL files in data/raw/dol/), build, sanity, train."""
+    from .enforcement import load_inspection_csv, load_violation_csv
+    from .pipeline import build as run_build
+    from .pipeline import train as run_train
+    from .sanity import run_gates
+
+    if not skip_download:
+        download_ita_summary(years=sorted(config.ITA_SUMMARY_URLS))
+    with _con() as con:
+        counts = load_all_summary(con)
+        console.print(f"Loaded {sum(counts.values()):,} ITA rows across {len(counts)} years")
+        dol = config.RAW_DIR / "dol"
+        insp = sorted(dol.glob("osha_inspection*.csv"))
+        viol = sorted(dol.glob("osha_violation*.csv"))
+        if insp and viol:
+            load_inspection_csv(con, insp[-1])
+            load_violation_csv(con, viol[-1])
+            console.print(f"Loaded DOL enforcement files from {dol}")
+        else:
+            console.print(f"[yellow]No DOL files in {dol}; training without enforcement features[/yellow]")
+        run_build(con)
+        ok = _print_gates(run_gates(con))
+        if not ok and not force:
+            console.print("[red]A sanity gate failed; fix the data or rerun with --force.[/red]")
+            raise typer.Exit(1)
+        run_train(con, model_dir=config.MODEL_DIR, reports_dir=config.REPORTS_DIR, num_boost_round=rounds)
+    console.print(f"[green]Done. Read {config.REPORTS_DIR / 'METRICS.md'}, then `nextrecordable serve`.[/green]")
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option()] = "127.0.0.1",
+    port: Annotated[int, typer.Option()] = 8000,
+):
+    """Run the API (one process per database file)."""
+    import os
+
+    import uvicorn
+
+    os.environ.setdefault("NEXTRECORDABLE_DB_PATH", str(STATE["db"]))
+    uvicorn.run(f"{__package__}.api:build_app_from_env", host=host, port=port, factory=True, workers=1)
+
 
 @app.command()
 def explore():
-    """First-pass exploration: row counts, schema, top NAICS."""
-    if not DB_PATH.exists():
-        console.print(f"[red]Database not found at {DB_PATH}. Run `load` first.[/red]")
-        raise typer.Exit(1)
-
-    with connect(read_only=True) as con:
-        # Per-year row counts
-        rows = con.execute(
-            """
-            SELECT data_year, COUNT(*) AS rows
-            FROM ita_summary
-            GROUP BY data_year
-            ORDER BY data_year
-            """
-        ).fetchall()
-
-        t = Table(title="ITA Summary: rows per year")
-        t.add_column("Year")
-        t.add_column("Rows", justify="right")
-        for year, n in rows:
-            t.add_row(str(year), f"{n:,}")
+    """Row counts by year and the largest NAICS groups in the latest year."""
+    with _con(read_only=True) as con:
+        t = Table("year", "rows", "establishments")
+        for y, n, k in con.execute(
+            "SELECT year, COUNT(*), COUNT(DISTINCT estab_key) FROM ita_panel GROUP BY 1 ORDER BY 1"
+        ).fetchall():
+            t.add_row(str(y), f"{n:,}", f"{k:,}")
         console.print(t)
+        t2 = Table("naics_4", "establishments", "median TCR")
+        for code, n, med in con.execute(
+            """SELECT naics_4, COUNT(*), median(tcr) FROM ita_panel
+               WHERE year = (SELECT max(year) FROM ita_panel) AND naics_4 <> ''
+               GROUP BY 1 ORDER BY 2 DESC LIMIT 15"""
+        ).fetchall():
+            t2.add_row(code, f"{n:,}", "" if med is None else f"{med:.2f}")
+        console.print(t2)
 
-        # Schema of unified view
-        schema = con.execute("DESCRIBE ita_summary").fetchall()
-        console.print(f"\n[bold]Unified schema: {len(schema)} columns[/bold]")
-        for col, dtype, *_ in schema[:30]:
-            console.print(f"  {col:<40} {dtype}")
-        if len(schema) > 30:
-            console.print(f"  ... and {len(schema) - 30} more")
-
-        # Try a few common column names for NAICS to show top industries
-        for naics_col in ("naics_code", "naics", "industry_code"):
-            try:
-                top = con.execute(
-                    f"""
-                    SELECT {naics_col}, COUNT(*) AS n
-                    FROM ita_summary
-                    WHERE data_year = (SELECT MAX(data_year) FROM ita_summary)
-                      AND {naics_col} IS NOT NULL
-                    GROUP BY 1
-                    ORDER BY n DESC
-                    LIMIT 15
-                    """
-                ).fetchall()
-                t2 = Table(title=f"Top 15 NAICS (latest year, col={naics_col})")
-                t2.add_column("NAICS")
-                t2.add_column("Establishments", justify="right")
-                for code, n in top:
-                    t2.add_row(str(code), f"{n:,}")
-                console.print(t2)
-                break
-            except Exception:
-                continue
-
-
-# ---------- ad-hoc query ----------
 
 @app.command()
-def query(sql: Annotated[str, typer.Argument(help="SQL string to execute")]):
-    """Run an ad-hoc SQL query against the database."""
-    with connect(read_only=True) as con:
-        result = con.execute(sql).fetchall()
-        cols = [d[0] for d in con.description]
-        t = Table(*cols)
-        for row in result[:200]:
+def query(sql: Annotated[str, typer.Argument(help="SQL to run (read-only)")]):
+    """Run an ad-hoc read-only query."""
+    with _con(read_only=True) as con:
+        res = con.execute(sql)
+        rows = res.fetchall()
+        t = Table(*[d[0] for d in res.description])
+        for row in rows[:200]:
             t.add_row(*[str(x) for x in row])
         console.print(t)
-        if len(result) > 200:
-            console.print(f"[dim](showing first 200 of {len(result):,} rows)[/dim]")
+        if len(rows) > 200:
+            console.print(f"[dim](first 200 of {len(rows):,} rows)[/dim]")
 
 
 if __name__ == "__main__":

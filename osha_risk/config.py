@@ -5,14 +5,19 @@ on 2026-05-15. OSHA occasionally shifts file naming conventions. If a download
 returns 404, re-fetch the listing page and update these URLs.
 """
 
+import os
 from pathlib import Path
 
 # ---------- Filesystem ----------
-ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
+# Paths default to the current working directory, so an installed package
+# works from any checkout. Override with environment variables.
+
+DATA_DIR = Path(os.environ.get("NEXTRECORDABLE_DATA_DIR", "data"))
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
-DB_PATH = DATA_DIR / "osha.duckdb"
+DB_PATH = Path(os.environ.get("NEXTRECORDABLE_DB_PATH", str(DATA_DIR / "nextrecordable.duckdb")))
+MODEL_DIR = Path(os.environ.get("NEXTRECORDABLE_MODEL_DIR", str(DATA_DIR / "model")))
+REPORTS_DIR = Path(os.environ.get("NEXTRECORDABLE_REPORTS_DIR", "reports"))
 
 # ---------- ITA Summary (Form 300A) ----------
 # Coverage: all establishments meeting reporting thresholds. ~hundreds of thousands of rows per year.

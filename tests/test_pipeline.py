@@ -1,153 +1,143 @@
-"""End-to-end pipeline test using synthetic OSHA-shaped CSVs.
-
-This validates that:
-  1. Per-year CSVs load into DuckDB even with drifting schemas
-  2. The canonical view resolves columns correctly
-  3. The panel builds with sensible lag and target columns
-  4. Base rates and counts are within sanity bounds
-"""
+"""Data layer: loading, canonical schema, keys, and the panel's integrity rules."""
 
 from __future__ import annotations
+
+import csv
 
 import duckdb
 import pytest
 
-from osha_risk.features import build_establishment_key_view, build_panel, panel_summary
+from osha_risk.features import build_keyed_view, build_panel, panel_summary
 from osha_risk.load import load_summary_csv
-from osha_risk.schema import build_canonical_view, resolve_column
+from osha_risk.schema import build_canonical_view
 
-from .synthetic import build_synthetic_dataset
-
-
-@pytest.fixture
-def loaded_db(tmp_path):
-    """Build synthetic CSVs and load them into a fresh DuckDB."""
-    csv_root = tmp_path / "csvs"
-    paths = build_synthetic_dataset(csv_root, n_establishments=200)
-
-    con = duckdb.connect(str(tmp_path / "test.duckdb"))
-    for year, csv_path in paths.items():
-        load_summary_csv(csv_path, year, con)
-
-    yield con
-    con.close()
+from .conftest import ita_row, write_ita_csv
 
 
-def test_yearly_tables_loaded(loaded_db):
-    """Each year creates its own table with the expected row count."""
-    for year in (2019, 2020, 2023, 2024):
-        n = loaded_db.execute(f"SELECT COUNT(*) FROM ita_summary_{year}").fetchone()[0]
-        assert n == 200, f"year {year} expected 200 rows, got {n}"
+def _panel(con, years_rows: dict[int, list[dict]], tmp_path) -> None:
+    for year, rows in years_rows.items():
+        load_summary_csv(write_ita_csv(tmp_path / f"ita_{year}.csv", rows), year, con)
+    build_canonical_view(con)
+    build_keyed_view(con)
+    build_panel(con)
 
 
-def test_schema_drift_handled(loaded_db):
-    """Legacy years use `naics`, current years use `naics_code`."""
-    legacy_col = resolve_column(loaded_db, "ita_summary_2019", ("naics_code", "naics"))
-    current_col = resolve_column(loaded_db, "ita_summary_2024", ("naics_code", "naics"))
-    assert legacy_col == "naics"
-    assert current_col == "naics_code"
+def test_leading_zero_zip_survives_type_sniffing(tmp_path):
+    """Regression: with 60k ZIPs and no leading zero first, DuckDB typed the column
+    BIGINT and stored CT's 06511 as 6511; the establishment could never be found."""
+    path = tmp_path / "ita_2022.csv"
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["establishment_name", "state", "zip_code", "annual_average_employees", "total_hours_worked"])
+        for i in range(60_000):
+            w.writerow([f"Plant {i}", "CA", 90000 + i % 9999, 50, 100_000])
+        w.writerow(["Elm City Castings Inc", "CT", "06511", 120, 240_000])
+    con = duckdb.connect()
+    load_summary_csv(path, 2022, con)
+    build_canonical_view(con)
+    build_keyed_view(con)
+    assert con.execute("SELECT typeof(zip_code) FROM ita_summary_2022 LIMIT 1").fetchone()[0] == "VARCHAR"
+    assert con.execute(
+        "SELECT zip5 FROM ita_keyed WHERE establishment_name LIKE 'Elm City%'"
+    ).fetchone()[0] == "06511"
 
 
-def test_canonical_view_unifies_schema(loaded_db):
-    """The canonical view exposes naics_code from BOTH legacy and current years."""
-    n_tables = build_canonical_view(loaded_db)
-    assert n_tables == 6
-
-    # Total rows across all years
-    total = loaded_db.execute("SELECT COUNT(*) FROM ita_canonical").fetchone()[0]
-    assert total == 6 * 200
-
-    # Every year should have non-null naics_code in the canonical view
-    rows = loaded_db.execute(
-        """
-        SELECT data_year, COUNT(*) FILTER (WHERE naics_code IS NOT NULL) AS n_naics
-        FROM ita_canonical
-        GROUP BY data_year
-        ORDER BY data_year
-        """
+def test_schema_drift_and_size_harmonization(world):
+    con = world["con"]
+    # legacy files (company_name / naics / estab_zip) and current files land in one schema
+    rows = con.execute(
+        "SELECT data_year, COUNT(*) FILTER (WHERE naics_code IS NOT NULL AND establishment_name IS NOT NULL "
+        "AND zip_code IS NOT NULL), COUNT(*) FROM ita_canonical GROUP BY 1 ORDER BY 1"
     ).fetchall()
-    for year, n_naics in rows:
-        assert n_naics == 200, f"year {year}: expected 200 non-null naics, got {n_naics}"
+    assert [r[0] for r in rows] == [2019, 2020, 2021, 2022, 2023, 2024]
+    assert all(complete == total for _, complete, total in rows)
+    # 21/22 exist in raw 2023+ files but never in the harmonized size_code
+    assert con.execute("SELECT COUNT(*) FROM ita_canonical WHERE size_code_raw IN ('21', '22')").fetchone()[0] > 0
+    assert con.execute("SELECT COUNT(*) FROM ita_panel WHERE size_code IN ('21', '22')").fetchone()[0] == 0
 
 
-def test_panel_has_lags_and_targets(loaded_db):
-    """Panel should have lag features for years >= year_2, targets for years <= max-1."""
-    build_canonical_view(loaded_db)
-    build_establishment_key_view(loaded_db)
-    n = build_panel(loaded_db)
-    assert n == 6 * 200
-
-    summary = panel_summary(loaded_db)
-    # Years 2020 to 2024 have a lag1 (5 years * 200 estabs)
-    assert summary["rows_with_lag"] == 5 * 200
-    # Years 2019 to 2023 have a next-year target (5 * 200)
-    assert summary["rows_with_target"] == 5 * 200
+def test_year_filing_for_beats_file_year(tmp_path):
+    con = duckdb.connect()
+    _panel(con, {2023: [ita_row("Late Filer Inc", year_filing_for=2022), ita_row("On Time Inc", year_filing_for=2023)]},
+           tmp_path)
+    got = dict(con.execute("SELECT establishment_name, year FROM ita_panel").fetchall())
+    assert got == {"Late Filer Inc": 2022, "On Time Inc": 2023}
 
 
-def test_base_rate_is_sensible(loaded_db):
-    """The fraction of (estab, year) with any recordable next year should be high
-    but not 100 percent, since synthetic data has a long zero tail for small plants."""
-    build_canonical_view(loaded_db)
-    build_establishment_key_view(loaded_db)
-    build_panel(loaded_db)
-    s = panel_summary(loaded_db)
-    base_rate = s["target_base_rate"]
-    # Synthetic data is generally injury-positive, so expect high but bounded
-    assert 0.3 <= base_rate <= 1.0, f"base rate {base_rate} outside sanity bounds"
+def test_amended_filing_does_not_leak_into_targets(tmp_path):
+    """Regression: two rows for one establishment-year made LAG/LEAD step within the
+    year, so a 2021 row's 'next year' target was the same year's amended filing."""
+    con = duckdb.connect()
+    _panel(con, {
+        2020: [ita_row("Acme Forge Inc", cases=2)],
+        2021: [ita_row("Acme Forge Inc", cases=0, created_timestamp="2022-02-01 10:00:00"),
+               ita_row("Acme Forge Inc", cases=9, created_timestamp="2022-06-01 10:00:00")],
+        2022: [ita_row("Acme Forge Inc", cases=5)],
+    }, tmp_path)
+    rows = con.execute(
+        "SELECT year, n_recordable, n_recordable_lag1, target_n_recordable_next, n_raw_rows "
+        "FROM ita_panel ORDER BY year"
+    ).fetchall()
+    assert rows == [(2020, 2, None, 9, 1), (2021, 9, 2, 5, 2), (2022, 5, 9, None, 1)]
 
 
-def test_tcr_computed_correctly(loaded_db):
-    """TCR should equal (n_recordable * 200000) / hours_worked."""
-    build_canonical_view(loaded_db)
-    build_establishment_key_view(loaded_db)
-    build_panel(loaded_db)
+def test_two_sites_with_one_name_and_zip_are_combined(tmp_path):
+    con = duckdb.connect()
+    _panel(con, {2023: [ita_row("Acme Forge Inc", cases=2, establishment_id="1", employees=50, hours=100_000),
+                        ita_row("Acme Forge Inc", cases=3, establishment_id="2", employees=70, hours=140_000)]},
+           tmp_path)
+    row = con.execute("SELECT n_sites, n_recordable, employees, hours_worked FROM ita_panel").fetchone()
+    assert row == (2, 5, 120.0, 240_000.0)
 
-    # Pick a row with positive hours and recordables
-    row = loaded_db.execute(
-        """
-        SELECT n_recordable, hours_worked, tcr
-        FROM ita_panel
-        WHERE hours_worked > 0 AND n_recordable > 0
-        LIMIT 1
-        """
+
+def test_skipped_year_gives_no_lag_and_no_target(tmp_path):
+    """Regression: an establishment missing 2020 got its 2021 count as the 2019
+    row's 'next year' target and its 2019 value as the 2021 row's lag."""
+    con = duckdb.connect()
+    other = ita_row("Other Co", zip_code="61603")
+    _panel(con, {
+        2019: [ita_row("Gap Works Inc", cases=1), other],
+        2020: [other],
+        2021: [ita_row("Gap Works Inc", cases=6), other],
+        2022: [ita_row("Gap Works Inc", cases=2), other],
+    }, tmp_path)
+    rows = con.execute(
+        "SELECT year, n_recordable_lag1, target_n_recordable_next, tcr_lag2 FROM ita_panel "
+        "WHERE establishment_name = 'Gap Works Inc' ORDER BY year"
+    ).fetchall()
+    assert rows == [(2019, None, None, None), (2021, None, 2, None), (2022, 6, None, None)]
+
+
+def test_rates_and_benchmarks(world):
+    con = world["con"]
+    n, hours, tcr, dart, n_dart = con.execute(
+        "SELECT n_recordable, hours_worked, tcr, dart_rate, n_dart FROM ita_panel "
+        "WHERE hours_worked > 0 AND n_recordable > 0 LIMIT 1"
     ).fetchone()
-    assert row is not None
-    n_rec, hours, tcr = row
-    expected = (n_rec * 200_000) / hours
-    assert tcr == pytest.approx(expected, rel=1e-9)
-
-
-def test_industry_benchmark_present(loaded_db):
-    """Each panel row should have a NAICS-4 median TCR (or NULL if no peers)."""
-    build_canonical_view(loaded_db)
-    build_establishment_key_view(loaded_db)
-    build_panel(loaded_db)
-
-    # Most rows in our synthetic data should have a benchmark since NAICS_POOL is small
-    n_with_benchmark = loaded_db.execute(
-        "SELECT COUNT(*) FROM ita_panel WHERE naics4_tcr_median IS NOT NULL"
+    assert tcr == pytest.approx(n * 200_000 / hours)
+    assert dart == pytest.approx(n_dart * 200_000 / hours)
+    bad = con.execute(
+        """SELECT COUNT(*) FROM ita_panel p
+           JOIN (SELECT year, naics_4, sum(n_recordable) * 200000 / sum(hours_worked) AS pooled
+                 FROM ita_panel WHERE hours_worked > 0 AND naics_4 <> '' GROUP BY 1, 2) b USING (year, naics_4)
+           WHERE abs(p.naics4_pooled_tcr - b.pooled) > 1e-9"""
     ).fetchone()[0]
-    assert n_with_benchmark > 1000  # most of 1200 rows
+    assert bad == 0
 
 
-def test_lag_actually_lags(loaded_db):
-    """tcr_lag1 in year_t equals tcr in year_t-1 for the same establishment."""
-    build_canonical_view(loaded_db)
-    build_establishment_key_view(loaded_db)
-    build_panel(loaded_db)
+def test_lags_point_at_the_previous_calendar_year(world):
+    con = world["con"]
+    bad = con.execute(
+        """SELECT COUNT(*) FROM ita_panel p1
+           LEFT JOIN ita_panel p0 ON p0.estab_key = p1.estab_key AND p0.year = p1.year - 1
+           WHERE p1.tcr_lag1 IS DISTINCT FROM p0.tcr"""
+    ).fetchone()[0]
+    assert bad == 0
 
-    row = loaded_db.execute(
-        """
-        SELECT
-            p1.estab_key, p1.year, p1.tcr_lag1, p0.tcr
-        FROM ita_panel p1
-        JOIN ita_panel p0
-          ON p0.estab_key = p1.estab_key
-         AND p0.year = p1.year - 1
-        WHERE p1.tcr_lag1 IS NOT NULL AND p0.tcr IS NOT NULL
-        LIMIT 1
-        """
-    ).fetchone()
-    assert row is not None
-    _, _, lag1, prior_tcr = row
-    assert lag1 == pytest.approx(prior_tcr, rel=1e-9)
+
+def test_panel_summary_counts(world):
+    s = panel_summary(world["con"])
+    assert s["total_rows"] > 0
+    assert s["distinct_establishments"] <= 1200
+    assert s["key_years_with_duplicates"] > 0  # the fixture writes amended filings
+    assert 0.3 < s["target_base_rate"] < 1.0

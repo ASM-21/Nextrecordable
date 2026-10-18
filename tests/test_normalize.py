@@ -1,97 +1,113 @@
-"""Tests for normalization functions."""
+"""Normalization rules (the single source of truth for names, addresses, ZIPs)."""
+
+import random
+
+import pytest
 
 from osha_risk.normalize import (
     name_first_token,
+    name_numbers,
     normalize_address,
     normalize_name,
+    state_code,
     zip5,
 )
 
 
 class TestNormalizeName:
-    def test_strips_entity_suffix(self):
-        assert normalize_name("ABC Manufacturing Inc") == "abc manufacturing"
-        assert normalize_name("ABC Manufacturing, LLC") == "abc manufacturing"
-        assert normalize_name("A.B.C. Manufacturing Incorporated") == "a b c manufacturing"
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("ABC Manufacturing Inc", "abc manufacturing"),
+            ("ABC Manufacturing, LLC", "abc manufacturing"),
+            ("ABC Mfg Co Inc", "abc manufacturing"),
+            ("ABC MFG", "abc manufacturing"),
+            ("Smith & Jones LLC", "smith and jones"),
+            ("Smith&Jones", "smith and jones"),
+            ("The Acme Company", "acme"),
+            ("McDonald's Corp", "mcdonalds"),
+            ("McDonald" + chr(0x2019) + "s Corp", "mcdonalds"),
+            ("Acme Inc Holdings", "acme inc holdings"),
+            ("S & S Machine", "s and s machine"),
+            ("Gateway Castings Corporaiton", "gateway castings"),
+            ("Acme Incorperated", "acme"),
+            ("Acme Compton", "acme compton"),
+            ("Inc", "inc"),
+        ],
+    )
+    def test_examples(self, raw, expected):
+        assert normalize_name(raw) == expected
 
-    def test_handles_stacked_suffixes(self):
-        # "ABC Mfg Co Inc" -> all three should strip
-        assert normalize_name("ABC Mfg Co Inc") == "abc manufacturing"
-
-    def test_expands_mfg_abbreviation(self):
-        assert normalize_name("ABC MFG") == "abc manufacturing"
-        assert normalize_name("ABC Mfg") == "abc manufacturing"
-
-    def test_empty_and_none(self):
+    def test_missing(self):
         assert normalize_name(None) == ""
+        assert normalize_name(float("nan")) == ""
         assert normalize_name("") == ""
 
-    def test_ampersand_normalized(self):
-        # & gets normalized to "and"
-        result = normalize_name("Smith & Jones LLC")
-        assert result == "smith and jones"
-
-    def test_does_not_strip_middle_inc(self):
-        # "Inc" mid-name should NOT be stripped (rare but possible)
-        # Our rule: strip from END only.
-        result = normalize_name("Acme Inc Holdings")
-        assert "holdings" in result
-        assert result.startswith("acme")
-
-    def test_idempotent(self):
-        s = "ABC Manufacturing, Inc."
-        once = normalize_name(s)
-        twice = normalize_name(once)
-        assert once == twice
+    def test_idempotent_on_random_names(self):
+        rng = random.Random(0)
+        parts = ["Acme", "MFG", "Co.", "&", "Inc", "the", "O'Brien", "Plant #2", "Corporation", "LLC"]
+        for _ in range(500):
+            s = " ".join(rng.choice(parts) for _ in range(rng.randint(1, 6)))
+            once = normalize_name(s)
+            assert normalize_name(once) == once, s
 
 
 class TestNormalizeAddress:
-    def test_abbreviates_street_types(self):
-        assert normalize_address("123 Main Street") == "123 main st"
-        assert normalize_address("456 Oak Avenue") == "456 oak ave"
-        assert normalize_address("789 Industrial Boulevard") == "789 industrial blvd"
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("123 Main Street", "123 main st"),
+            ("100 North Main St", "100 n main st"),
+            ("123 Main St., Suite #100", "123 main st ste 100"),
+            ("789 Industrial Boulevard", "789 industrial blvd"),
+        ],
+    )
+    def test_examples(self, raw, expected):
+        assert normalize_address(raw) == expected
 
-    def test_directions(self):
-        assert normalize_address("100 North Main St") == "100 n main st"
-        assert normalize_address("100 Northwest Pkwy") == "100 nw pkwy"
-
-    def test_suite_normalized(self):
-        assert normalize_address("123 Main St Suite 100") == "123 main st ste 100"
-
-    def test_empty_and_none(self):
+    def test_missing(self):
         assert normalize_address(None) == ""
-        assert normalize_address("") == ""
-
-    def test_already_abbreviated_unchanged(self):
-        assert normalize_address("123 Main St Ste 100") == "123 main st ste 100"
-
-    def test_punctuation_stripped(self):
-        assert normalize_address("123 Main St., Suite #100") == "123 main st ste 100"
 
 
 class TestZip5:
-    def test_strips_plus_four(self):
-        assert zip5("12345-6789") == "12345"
-        assert zip5("12345") == "12345"
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("12345", "12345"),
+            ("12345-6789", "12345"),
+            ("123456789", "12345"),
+            (12345, "12345"),
+            ("ZIP: 12345-6789!", "12345"),
+            # A CT ZIP after an integer round trip (DuckDB sniffing, DOL files, Excel)
+            (6511, "06511"),
+            ("6511", "06511"),
+            ("6511.0", "06511"),
+            ("6511-1234", "06511"),
+            (65111234, "06511"),
+            ("501", "00501"),
+            ("12", ""),
+            ("1234567890", ""),
+            (None, ""),
+            (float("nan"), ""),
+        ],
+    )
+    def test_examples(self, raw, expected):
+        assert zip5(raw) == expected
 
-    def test_handles_int_input(self):
-        assert zip5(12345) == "12345"
-
-    def test_zero_padding_not_added(self):
-        # If only 4 digits given, we return empty (invalid ZIP)
-        assert zip5("1234") == ""
-
-    def test_handles_none(self):
-        assert zip5(None) == ""
-
-    def test_handles_garbage(self):
-        assert zip5("ZIP: 12345-6789!") == "12345"
+    def test_integer_round_trip_is_lossless(self):
+        # Every 5-digit ZIP survives being stored as an integer.
+        for z in ("00501", "01001", "06511", "07030", "10001", "99950"):
+            assert zip5(int(z)) == z
+            assert zip5(f"{int(z)}-1234") == z
 
 
-class TestNameFirstToken:
-    def test_extracts_first_token(self):
-        normed = normalize_name("ABC Manufacturing Inc")
-        assert name_first_token(normed) == "abc"
+def test_name_numbers():
+    assert name_numbers("acme plant 02 store 117") == "117 2"
+    assert name_numbers("acme forge") == ""
 
-    def test_empty(self):
-        assert name_first_token("") == ""
+
+def test_first_token_and_state():
+    assert name_first_token("acme forge") == "acme"
+    assert name_first_token("") == ""
+    assert state_code(" il ") == "IL"
+    assert state_code(None) == ""

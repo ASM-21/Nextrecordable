@@ -1,19 +1,16 @@
-"""Resolve OSHA ITA column names to canonical fields.
+"""Map raw ITA 300A tables (all VARCHAR) onto one typed, canonical schema.
 
-OSHA's 300A schema has drifted across years. Column names are sometimes
-`naics_code` and sometimes `naics`; `establishment_name` is sometimes
-`company_name`; etc. The `config.NAICS_COLUMN_CANDIDATES` (and friends)
-tuples enumerate the synonyms we've observed.
+Column names drift across release years; config.*_CANDIDATES lists the known
+synonyms. Field meanings and codes follow OSHA's summary data dictionary
+(osha.gov/sites/default/files/summary_data_dictionary.pdf), including:
 
-This module gives us:
-
-  - `resolve_column(con, table, candidates)` -> first matching column name,
-    or None if no candidate is present
-  - `canonical_select_sql(con, table)` -> a SELECT clause that aliases the
-    found columns to canonical names, with NULLs for any missing fields
-
-We use this to build a clean "canonical" view on top of the raw per-year
-tables so downstream feature code never has to think about schema drift.
+  * year_filing_for is the calendar year the injuries occurred. It is used
+    as `data_year` when present; the file's nominal year is the fallback.
+  * size code 2 (20-249 employees) was split into 21 (20-99) and 22
+    (100-249) starting with 2023 data. `size_code` folds 21/22 back into 2 so
+    the category means the same thing in every year; `size_code_raw` keeps
+    the original.
+  * no_injuries_illnesses: 1 = had recordable cases, 2 = did not.
 """
 
 from __future__ import annotations
@@ -32,26 +29,36 @@ from .config import (
     ZIP_COLUMN_CANDIDATES,
 )
 
-# canonical_field -> ordered list of candidate source columns
-CANONICAL_FIELDS: dict[str, tuple[str, ...]] = {
+TEXT_FIELDS: dict[str, tuple[str, ...]] = {
+    "establishment_id": ("establishment_id",),
+    "ein": ("ein",),
     "establishment_name": NAME_COLUMN_CANDIDATES,
+    "company_name": ("company_name",),
     "street_address": STREET_COLUMN_CANDIDATES,
     "city": CITY_COLUMN_CANDIDATES,
     "state": STATE_COLUMN_CANDIDATES,
     "zip_code": ZIP_COLUMN_CANDIDATES,
     "naics_code": NAICS_COLUMN_CANDIDATES,
-    "size_code": SIZE_COLUMN_CANDIDATES,
+    "size_code_raw": SIZE_COLUMN_CANDIDATES,
+    "establishment_type": ("establishment_type",),
+    "created_timestamp": ("created_timestamp",),
+    "change_reason": ("change_reason",),
+}
+
+REAL_FIELDS: dict[str, tuple[str, ...]] = {
     "annual_average_employees": ANNUAL_EMPLOYEES_CANDIDATES,
     "total_hours_worked": HOURS_CANDIDATES,
 }
 
-# Count columns we want as canonical NUMERIC fields. These have stable enough names
-# across years that we just enumerate the known forms.
-INCIDENT_COUNT_FIELDS: dict[str, tuple[str, ...]] = {
+INT_FIELDS: dict[str, tuple[str, ...]] = {
+    "year_filing_for": ("year_filing_for",),
+    "no_injuries_illnesses": ("no_injuries_illnesses",),
     "total_deaths": ("total_deaths",),
     "total_dafw_cases": ("total_dafw_cases", "total_dafw_count"),
     "total_djtr_cases": ("total_djtr_cases", "total_djtr_count"),
     "total_other_cases": ("total_other_cases", "total_other_count"),
+    "total_dafw_days": ("total_dafw_days",),
+    "total_djtr_days": ("total_djtr_days",),
     "total_injuries": ("total_injuries",),
     "total_skin_disorders": ("total_skin_disorders",),
     "total_respiratory_conditions": ("total_respiratory_conditions",),
@@ -60,82 +67,83 @@ INCIDENT_COUNT_FIELDS: dict[str, tuple[str, ...]] = {
     "total_other_illnesses": ("total_other_illnesses",),
 }
 
-# Stable bookkeeping columns
-PASSTHROUGH_FIELDS: tuple[str, ...] = ("data_year", "establishment_id")
+CANONICAL_COLUMNS: tuple[str, ...] = (
+    ("file_year", "data_year", "size_code", *TEXT_FIELDS, *REAL_FIELDS, *INT_FIELDS)
+)
 
 
-def table_columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
-    """Return the set of column names (lowercased) for a DuckDB table."""
+def table_columns(con: duckdb.DuckDBPyConnection, table: str) -> dict[str, str]:
+    """{lowercased name: actual name} for a table's columns."""
     rows = con.execute(f"PRAGMA table_info('{table}')").fetchall()
-    # PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
-    return {r[1].lower() for r in rows}
+    return {r[1].lower(): r[1] for r in rows}
 
 
 def resolve_column(
     con: duckdb.DuckDBPyConnection, table: str, candidates: tuple[str, ...]
 ) -> str | None:
-    """Return the first candidate present in `table`, or None."""
+    """The first candidate present in `table` (actual casing), or None."""
     cols = table_columns(con, table)
     for c in candidates:
         if c.lower() in cols:
-            return c
+            return cols[c.lower()]
     return None
 
 
+def _num(col: str, typ: str) -> str:
+    # Values arrive as text; "3.0" must still become 3, so go through DOUBLE.
+    inner = f"TRY_CAST(trim(CAST(\"{col}\" AS VARCHAR)) AS DOUBLE)"
+    return inner if typ == "DOUBLE" else f"CAST(round({inner}) AS {typ})"
+
+
 def canonical_select_sql(con: duckdb.DuckDBPyConnection, table: str) -> str:
-    """Build a SELECT clause for `table` that emits canonical column names.
-
-    Missing columns are emitted as `NULL AS canonical_name` so every per-year
-    table produces an identical schema in the unified view.
-    """
-    cols_in_table = table_columns(con, table)
+    """SELECT emitting the canonical schema for one raw per-year table."""
     pieces: list[str] = []
+    found: dict[str, str | None] = {}
+    for canonical, candidates in TEXT_FIELDS.items():
+        col = resolve_column(con, table, candidates)
+        found[canonical] = col
+        pieces.append(
+            f'NULLIF(trim(CAST("{col}" AS VARCHAR)), \'\') AS {canonical}' if col
+            else f"CAST(NULL AS VARCHAR) AS {canonical}"
+        )
+    for canonical, candidates in REAL_FIELDS.items():
+        col = resolve_column(con, table, candidates)
+        pieces.append(f"{_num(col, 'DOUBLE')} AS {canonical}" if col else f"CAST(NULL AS DOUBLE) AS {canonical}")
+    for canonical, candidates in INT_FIELDS.items():
+        col = resolve_column(con, table, candidates)
+        found[canonical] = col
+        pieces.append(f"{_num(col, 'INTEGER')} AS {canonical}" if col else f"CAST(NULL AS INTEGER) AS {canonical}")
 
-    # Pass-through (data_year, establishment_id if present)
-    for f in PASSTHROUGH_FIELDS:
-        if f.lower() in cols_in_table:
-            pieces.append(f'"{f}" AS {f}')
-        else:
-            pieces.append(f"NULL AS {f}")
-
-    # String / identifier fields
-    for canonical, candidates in CANONICAL_FIELDS.items():
-        found = resolve_column(con, table, candidates)
-        if found:
-            pieces.append(f'CAST("{found}" AS VARCHAR) AS {canonical}')
-        else:
-            pieces.append(f"CAST(NULL AS VARCHAR) AS {canonical}")
-
-    # Numeric incident counts
-    for canonical, candidates in INCIDENT_COUNT_FIELDS.items():
-        found = resolve_column(con, table, candidates)
-        if found:
-            pieces.append(
-                f'TRY_CAST("{found}" AS INTEGER) AS {canonical}'
-            )
-        else:
-            pieces.append(f"CAST(NULL AS INTEGER) AS {canonical}")
-
+    file_year = "file_year" if "file_year" in table_columns(con, table) else "CAST(NULL AS INTEGER)"
+    yff = _num(found["year_filing_for"], "INTEGER") if found["year_filing_for"] else "CAST(NULL AS INTEGER)"
+    size_raw = (
+        f'NULLIF(trim(CAST("{found["size_code_raw"]}" AS VARCHAR)), \'\')'
+        if found["size_code_raw"] else "CAST(NULL AS VARCHAR)"
+    )
+    pieces.insert(0, f"CAST({file_year} AS INTEGER) AS file_year")
+    pieces.insert(
+        1,
+        f"CASE WHEN {yff} BETWEEN 2000 AND 2100 THEN {yff} ELSE CAST({file_year} AS INTEGER) END AS data_year",
+    )
+    pieces.insert(2, f"CASE WHEN {size_raw} IN ('21', '22') THEN '2' ELSE {size_raw} END AS size_code")
     return "SELECT " + ",\n  ".join(pieces) + f"\nFROM {table}"
 
 
-def build_canonical_view(con: duckdb.DuckDBPyConnection, view_name: str = "ita_canonical") -> int:
-    """Create a view that unions all per-year tables under a stable canonical schema.
-
-    Returns the number of source tables included.
-    """
-    tables = [
+def summary_tables(con: duckdb.DuckDBPyConnection) -> list[str]:
+    return [
         r[0]
         for r in con.execute(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_name LIKE 'ita_summary_%' "
-            "ORDER BY table_name"
+            "WHERE table_name SIMILAR TO 'ita_summary_[0-9]{4}' ORDER BY table_name"
         ).fetchall()
     ]
+
+
+def build_canonical_view(con: duckdb.DuckDBPyConnection, view_name: str = "ita_canonical") -> int:
+    """Union every ita_summary_<year> table under the canonical schema. Returns table count."""
+    tables = summary_tables(con)
     if not tables:
         raise RuntimeError("No ita_summary_<year> tables found. Run `load` first.")
-
-    selects = [canonical_select_sql(con, t) for t in tables]
-    union_sql = "\nUNION ALL\n".join(f"({s})" for s in selects)
+    union_sql = "\nUNION ALL BY NAME\n".join(f"({canonical_select_sql(con, t)})" for t in tables)
     con.execute(f"CREATE OR REPLACE VIEW {view_name} AS {union_sql}")
     return len(tables)

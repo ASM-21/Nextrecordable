@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nextrecordable</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f2f4f6;
+    --ink: #14171a;
+    --rule: #9aa4ae;
+    --muted: #5b6570;
+    --field: #ffffff;
+    --mark: #ffd23f;
+    --mark-ink: #14171a;
+    --step: #dde2e7;
+    --focus: #1d5fbf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #1f2328;
+      --ink: #e8ebee;
+      --rule: #56606a;
+      --muted: #a3adb7;
+      --field: #262b31;
+      --step: #333a42;
+      --focus: #8ab4ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Archivo", system-ui, sans-serif;
+    font-variation-settings: "wdth" 100;
+    font-size: 1rem;
+    line-height: 1.5;
+    font-feature-settings: "tnum" 1;
+  }
+  main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1rem 4rem; }
+  .wide { font-variation-settings: "wdth" 125; }
+  h1 { font-size: 1.5rem; font-weight: 750; letter-spacing: -0.01em; margin: 0 0 0.25rem; }
+  .lede { color: var(--muted); max-width: 36rem; margin: 0 0 2rem; }
+
+  form { display: grid; grid-template-columns: 2.2fr 0.7fr 0.9fr; gap: 0; border: 1.5px solid var(--ink); background: var(--field); }
+  .box { position: relative; border-right: 1.5px solid var(--ink); padding: 0.4rem 0.6rem 0.5rem; }
+  .box:nth-child(3) { border-right: 0; }
+  .box.street { grid-column: 1 / 3; border-top: 1.5px solid var(--ink); }
+  .box label { display: block; font-size: 0.75rem; color: var(--muted); }
+  .box input { width: 100%; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 1.05rem; padding: 0.1rem 0; outline: none; }
+  .box:focus-within { box-shadow: inset 0 0 0 2px var(--focus); }
+  .submit { grid-column: 3; border-top: 1.5px solid var(--ink); display: flex; }
+  .submit button { flex: 1; border: 0; background: var(--ink); color: var(--paper); font: inherit; font-weight: 650; font-size: 1rem; cursor: pointer; padding: 0.75rem; }
+  .submit button:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+  .submit button[disabled] { opacity: 0.6; cursor: progress; }
+
+  #out { margin-top: 2.5rem; }
+  .who { font-size: 1.35rem; font-weight: 700; margin: 0; }
+  .where { color: var(--muted); margin: 0.1rem 0 1.75rem; }
+
+  .forecast { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.25rem; }
+  .rate { font-size: clamp(3.5rem, 12vw, 5.5rem); font-weight: 800; line-height: 1; position: relative; padding: 0 0.15em; color: var(--mark-ink); z-index: 0; }
+  .rate::before {
+    content: ""; position: absolute; z-index: -1; left: 0; right: 0; top: 18%; bottom: 8%;
+    background: var(--mark); transform: skewX(-6deg); transform-origin: left;
+    animation: swipe 420ms cubic-bezier(.2,.7,.2,1) both;
+  }
+  @keyframes swipe { from { transform: skewX(-6deg) scaleX(0); } to { transform: skewX(-6deg) scaleX(1); } }
+  @media (prefers-reduced-motion: reduce) { .rate::before { animation: none; } }
+  .rate-label { max-width: 20rem; color: var(--ink); }
+
+  .strip { margin: 1.75rem 0 0.5rem; }
+  .strip-bar { position: relative; display: grid; grid-template-columns: repeat(5, 1fr); height: 0.9rem; border: 1.5px solid var(--ink); }
+  .strip-bar span { border-right: 1px solid var(--rule); background: var(--step); }
+  .strip-bar span:nth-child(odd) { background: transparent; }
+  .strip-bar span:last-child { border-right: 0; }
+  .marker { position: absolute; top: -0.55rem; bottom: -0.55rem; width: 3px; background: var(--ink); transform: translateX(-1.5px); }
+  .strip-ends { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; }
+  .band { margin: 0.6rem 0 0; }
+
+  .facts { margin: 2rem 0 0; padding: 0; list-style: none; border-top: 1.5px solid var(--ink); }
+  .facts li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.55rem 0; border-bottom: 1px solid var(--rule); }
+  .facts li span:last-child { text-align: right; font-weight: 600; }
+
+  h2 { font-size: 1.05rem; font-weight: 700; margin: 2.5rem 0 0.75rem; }
+  .drivers { list-style: none; margin: 0; padding: 0; }
+  .drivers li { display: grid; grid-template-columns: 4.5rem 1fr; gap: 0.75rem; padding: 0.35rem 0; }
+  .mult { font-weight: 750; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  th { text-align: right; font-weight: 600; font-size: 0.8rem; color: var(--muted); padding: 0.4rem 0.5rem; border-bottom: 1.5px solid var(--ink); }
+  td { text-align: right; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--rule); }
+  th:first-child, td:first-child { text-align: left; padding-left: 0; }
+  .table-wrap { overflow-x: auto; }
+
+  .caveats { color: var(--muted); font-size: 0.9rem; padding-left: 1.1rem; }
+  .caveats li { margin-bottom: 0.4rem; }
+
+  .notice { border: 1.5px solid var(--ink); padding: 1rem 1.1rem; background: var(--field); }
+  .notice p { margin: 0 0 0.6rem; }
+  .cands { list-style: none; padding: 0; margin: 0.25rem 0 0; }
+  .cands button { font: inherit; background: none; border: 0; border-bottom: 1px solid var(--rule); color: var(--ink); cursor: pointer; text-align: left; width: 100%; padding: 0.5rem 0; }
+  .cands button:hover, .cands button:focus-visible { background: var(--step); outline: none; }
+
+  footer { margin-top: 3.5rem; color: var(--muted); font-size: 0.85rem; }
+  footer a { color: var(--ink); }
+
+  @media (max-width: 600px) {
+    form { grid-template-columns: 1fr 1fr; }
+    .box:nth-child(1) { grid-column: 1 / 3; border-right: 0; border-bottom: 1.5px solid var(--ink); }
+    .box:nth-child(3) { border-right: 0; }
+    .box.street { grid-column: 1 / 3; border-right: 0; }
+    .submit { grid-column: 1 / 3; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1 class="wide">nextrecordable</h1>
+  <p class="lede">Look up an employer that files OSHA injury logs and see its expected injury rate for next year, measured against its industry.</p>
+
+  <form id="lookup" autocomplete="off">
+    <div class="box"><label for="name">Establishment or company name</label><input id="name" name="name" required maxlength="300" placeholder="Acme Forge Inc"></div>
+    <div class="box"><label for="state">State</label><input id="state" name="state" required maxlength="2" placeholder="IL"></div>
+    <div class="box"><label for="zip_code">ZIP</label><input id="zip_code" name="zip_code" required maxlength="10" inputmode="numeric" placeholder="61602"></div>
+    <div class="box street"><label for="street_address">Street address (optional, helps when names are common)</label><input id="street_address" name="street_address" maxlength="300"></div>
+    <div class="submit"><button type="submit">Look up</button></div>
+  </form>
+
+  <section id="out" aria-live="polite"></section>
+
+  <footer>
+    <p>Scoring a whole book of business? Upload a CSV with name, state and ZIP columns through the batch endpoint in the <a href="/docs">API docs</a>.</p>
+    <p>An independent project built on public OSHA injury logs and Department of Labor enforcement records. Not affiliated with OSHA or the Department of Labor.</p>
+  </footer>
+</main>
+<script>
+const out = document.getElementById("out");
+const form = document.getElementById("lookup");
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const num = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v)) ? "n/a" : Number(v).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+const pct = (v) => (v === null || v === undefined) ? "n/a" : `${Math.round(v * 100)}%`;
+const ordinal = (n) => { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+
+async function lookup(payload) {
+  const button = form.querySelector("button");
+  button.disabled = true; button.textContent = "Looking up";
+  try {
+    const r = await fetch("/score", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+    const body = await r.json();
+    if (r.ok) renderReport(body);
+    else if (r.status === 404) renderNoMatch(body.detail, payload);
+    else if (r.status === 422) renderNotice("Fill in the company name, a two-letter state and a ZIP code.");
+    else renderNotice(`The lookup failed (${r.status}). Try again in a moment.`);
+  } catch (e) {
+    renderNotice("Couldn't reach the server. Check your connection and try again.");
+  } finally {
+    button.disabled = false; button.textContent = "Look up";
+  }
+}
+
+form.addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const data = Object.fromEntries(new FormData(form).entries());
+  if (!data.street_address) delete data.street_address;
+  data.state = data.state.trim().toUpperCase();
+  lookup(data);
+});
+
+function renderNotice(text) {
+  out.innerHTML = `<div class="notice"><p>${esc(text)}</p></div>`;
+}
+
+function renderNoMatch(detail, payload) {
+  const cands = (detail && detail.candidates) || [];
+  const list = cands.length ? `<p>Closest establishments on file:</p><ul class="cands">${cands.map((c, i) =>
+      `<li><button type="button" data-i="${i}">${esc(c.establishment_name)}, ${esc(c.street_address || "")} ${esc(c.city || "")} ${esc(c.state)} ${esc(c.zip5)}</button></li>`).join("")}</ul>` : "";
+  out.innerHTML = `<div class="notice"><p>${esc(detail ? detail.message : "No match found.")}</p>${list}</div>`;
+  out.querySelectorAll(".cands button").forEach((b) => b.addEventListener("click", () => {
+    const c = cands[Number(b.dataset.i)];
+    form.name.value = c.establishment_name; form.zip_code.value = c.zip5; form.state.value = c.state;
+    form.street_address.value = c.street_address || "";
+    lookup({name: c.establishment_name, state: c.state, zip_code: c.zip5, street_address: c.street_address || undefined});
+  }));
+}
+
+function renderReport(r) {
+  const p = r.peer_pctile;
+  const marker = (p === null || p === undefined) ? "" : `<div class="marker" style="left:${(p * 100).toFixed(1)}%"></div>`;
+  const pos = (p === null || p === undefined) ? "No peer group large enough to compare." :
+    `${esc(r.risk_band.charAt(0).toUpperCase() + r.risk_band.slice(1))}: ${ordinal(Math.round(p * 100))} percentile among ${num(r.peer_count, 0)} establishments in ${esc(r.peer_group)}.`;
+  const e = r.enforcement;
+  const enf = !e ? "No enforcement data loaded" :
+    (e.enf_inspections_2y > 0 ? `${num(e.enf_inspections_2y, 0)} inspection${e.enf_inspections_2y === 1 ? "" : "s"}, ${num(e.enf_citations_2y, 0)} citation${e.enf_citations_2y === 1 ? "" : "s"}, $${num(e.enf_initial_penalty_2y, 0)} initial penalties`
+      : "None on record");
+  const drivers = (r.risk_drivers || []).map((d) => {
+    const m = d.rate_multiplier;
+    const mult = m ? `×${num(m, 2)}` : (d.contribution > 0 ? "up" : "down");
+    const v = (typeof d.value === "number") ? ` (${num(d.value, d.value % 1 ? 2 : 0)})` : (d.value ? ` (${esc(d.value)})` : "");
+    return `<li><span class="mult">${mult}</span><span>${esc(d.label)}${v} ${d.contribution > 0 ? "raises" : "lowers"} the estimate</span></li>`;
+  }).join("");
+  const rows = (r.history || []).slice().reverse().map((h) =>
+    `<tr><td>${h.year}</td><td>${num(h.employees, 0)}</td><td>${num(h.n_recordable, 0)}</td><td>${num(h.tcr)}</td><td>${num(h.naics4_tcr_median)}</td></tr>`).join("");
+  out.innerHTML = `
+    <p class="who wide">${esc(r.establishment_name)}</p>
+    <p class="where">${esc(r.street_address || "")}${r.street_address ? ", " : ""}${esc(r.city || "")} ${esc(r.state)} ${esc(r.zip5)}. NAICS ${esc(r.naics_code || "n/a")}. Latest filing ${r.latest_year}.</p>
+    <div class="forecast"><span class="rate wide">${num(r.expected_tcr_next)}</span>
+      <span class="rate-label">expected recordable cases per 100 full-time workers in ${r.forecast_year}</span></div>
+    <div class="strip" role="img" aria-label="${esc(pos)}">
+      <div class="strip-bar"><span></span><span></span><span></span><span></span><span></span>${marker}</div>
+      <div class="strip-ends"><span>Lower than industry peers</span><span>Higher</span></div>
+    </div>
+    <p class="band">${pos}</p>
+    <ul class="facts">
+      <li><span>Chance of at least one recordable case in ${r.forecast_year}</span><span>${pct(r.p_any_next)}</span></li>
+      <li><span>Case rate in ${r.latest_year}</span><span>${num(r.current_year_metrics.tcr)}</span></li>
+      <li><span>Industry median case rate</span><span>${num(r.current_year_metrics.naics4_tcr_median)}</span></li>
+      <li><span>OSHA inspections, last two years</span><span>${enf}</span></li>
+      <li><span>Confidence</span><span>${esc(r.confidence)}: ${esc(r.confidence_note)}</span></li>
+    </ul>
+    <h2>What moves this estimate</h2>
+    <ul class="drivers">${drivers}</ul>
+    <h2>Filed with OSHA</h2>
+    <div class="table-wrap"><table><thead><tr><th>Year</th><th>Employees</th><th>Recordable cases</th><th>Case rate</th><th>Industry median</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <h2>Read before relying on this</h2>
+    <ul class="caveats">${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
+}
+</script>
+</body>
+</html>

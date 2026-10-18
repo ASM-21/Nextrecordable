@@ -2,7 +2,6 @@
 .venv/
 __pycache__/
 *.pyc
-*.pyo
 *.egg-info/
 build/
 dist/
@@ -10,17 +9,8 @@ dist/
 .ruff_cache/
 .ipynb_checkpoints/
 
-# Data (do not commit raw OSHA files)
-data/raw/
-data/processed/
-data/*.duckdb
-data/*.duckdb.wal
-
-# Trained model artifacts (regenerable, can be large)
-models/*/model.txt
-models/*/calibrator.pkl
-models/*/meta.json
-model_out/
+# Downloaded data, the database and trained models are all rebuilt by `run-all`
+data/
 
 # IDE / OS
 .vscode/
@@ -28,6 +18,6 @@ model_out/
 *.swp
 .DS_Store
 
-# Env
+# Secrets
 .env
 .envrc

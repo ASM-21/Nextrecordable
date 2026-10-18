@@ -1,31 +1,21 @@
-.PHONY: help install dev-install test test-fast lint fix format download load explore serve clean
+.PHONY: help dev-install test lint fix run-all download load build sanity train serve explore clean
+
+CLI := python -m osha_risk.cli
 
 help:
-	@echo "osha-risk dev commands"
-	@echo ""
-	@echo "  make install       Install package (runtime deps only)"
-	@echo "  make dev-install   Install package + dev deps (ruff, pytest, jupyter)"
-	@echo "  make test          Run full test suite verbosely"
-	@echo "  make test-fast     Run tests, quiet output, stop on first failure"
-	@echo "  make lint          Run ruff check"
-	@echo "  make fix           Run ruff check --fix"
-	@echo "  make download      Download OSHA ITA summary data (2016-2024)"
-	@echo "  make load          Load downloaded data into DuckDB"
-	@echo "  make explore       Print summary stats from the loaded DB"
-	@echo "  make serve         Run the API server (needs a saved model in data/model)"
-	@echo "  make clean         Remove caches, __pycache__, build artifacts"
-
-install:
-	pip install -e .
+	@echo "make dev-install   install with dev tools"
+	@echo "make test          run the test suite (synthetic data, no network)"
+	@echo "make lint          ruff"
+	@echo "make run-all       download -> load -> build -> sanity -> train (real OSHA data)"
+	@echo "make download | load | build | sanity | train   one step at a time"
+	@echo "make serve         run the API and lookup page on http://127.0.0.1:8000"
+	@echo "make clean         remove caches"
 
 dev-install:
 	pip install -e ".[dev]"
 
 test:
-	pytest -v
-
-test-fast:
-	pytest -q -x
+	pytest -q
 
 lint:
 	ruff check .
@@ -33,21 +23,30 @@ lint:
 fix:
 	ruff check . --fix
 
+run-all:
+	$(CLI) run-all
+
 download:
-	python -m osha_risk.cli download summary
+	$(CLI) download summary
 
 load:
-	python -m osha_risk.cli load
+	$(CLI) load
 
-explore:
-	python -m osha_risk.cli explore
+build:
+	$(CLI) build
+
+sanity:
+	$(CLI) sanity
+
+train:
+	$(CLI) train
 
 serve:
-	OSHA_RISK_SERVE=1 uvicorn osha_risk.api:app --host 0.0.0.0 --port 8000 --reload
+	$(CLI) serve
+
+explore:
+	$(CLI) explore
 
 clean:
-	find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name '.pytest_cache' -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name '.ruff_cache' -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name '*.egg-info' -exec rm -rf {} + 2>/dev/null || true
+	find . -type d \( -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache -o -name '*.egg-info' \) -prune -exec rm -rf {} + 2>/dev/null || true
 	rm -rf build dist
