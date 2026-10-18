@@ -232,14 +232,20 @@ def link(
 
 
 def suggestions(con, rec_id: int, *, candidates: str = "_match_candidates",
-                directory: str = "estab_directory", k: int = 3) -> list[dict[str, Any]]:
-    """Top-k scored candidates for one input row, for "did you mean" responses."""
+                directory: str = "estab_directory", k: int = 3,
+                min_probability: float = 0.05) -> list[dict[str, Any]]:
+    """Top-k scored candidates for one input row, for "did you mean" responses.
+
+    Candidates below `min_probability` are dropped: a block can contain an
+    unrelated business that merely shares the ZIP, and listing it as "closest"
+    invites a wrong click.
+    """
     prob = f"1.0 / (1.0 + pow(2.0, -({PRIOR_BITS} + c.weight)))"
     rows = con.execute(
         f"""
         SELECT d.establishment_name, d.street_address, d.city, d.state, d.zip5, {prob}
         FROM {candidates} c JOIN {directory} d USING (estab_key)
-        WHERE c.rec_id = ?
+        WHERE c.rec_id = ? AND {prob} >= {float(min_probability)}
         ORDER BY c.weight DESC, c.name_jw DESC
         LIMIT {int(k)}
         """,

@@ -221,7 +221,7 @@ function renderReport(r) {
       <li><span>Case rate in ${r.latest_year}</span><span>${num(r.current_year_metrics.tcr)}</span></li>
       <li><span>Industry median case rate</span><span>${num(r.current_year_metrics.naics4_tcr_median)}</span></li>
       <li><span>OSHA inspections, last two years</span><span>${enf}</span></li>
-      <li><span>Confidence</span><span>${esc(r.confidence)}: ${esc(r.confidence_note)}</span></li>
+      <li><span>Confidence</span><span>${esc(r.confidence.charAt(0).toUpperCase() + r.confidence.slice(1))}, ${esc(r.confidence_note)}</span></li>
     </ul>
     <h2>What moves the estimate off its starting point</h2>
     <ul class="drivers">${drivers}</ul>

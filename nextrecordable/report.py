@@ -21,9 +21,10 @@ from .models.baseline import FEATURE_LABELS, TrainResult, fetch_frame
 _KEY_RE = re.compile(r"[0-9a-f]{32}")
 
 STANDARD_CAVEATS: list[str] = [
-    "OSHA injury logs undercount recordable cases; studies put underreporting "
-    "anywhere from 30 to 70 percent depending on industry. Scores predict "
-    "REPORTED cases, which also reflect how carefully an employer records them.",
+    "OSHA injury logs undercount recordable cases; published estimates of the "
+    "share missed run from roughly 30 to 70 percent, depending on industry and "
+    "method. Scores predict reported cases, which also reflect how carefully an "
+    "employer records them.",
     "Only establishments required to file with OSHA's Injury Tracking "
     "Application appear here; most workplaces under 20 employees do not file.",
     "Expected case rate is size-adjusted (cases per 200,000 hours). The chance "
@@ -97,12 +98,12 @@ def score_keys(
 def confidence_for(n_years: int) -> tuple[str, str]:
     if n_years < 2:
         return "low", (
-            f"{n_years} year of filings. The score leans on the industry baseline "
-            "more than on this establishment's own record."
+            f"{n_years} year of filings, so the estimate leans on the industry rate "
+            "more than on this establishment's own record"
         )
     if n_years < 4:
-        return "moderate", f"{n_years} years of filings."
-    return "high", f"{n_years} years of filings."
+        return "moderate", f"{n_years} years of filings"
+    return "high", f"{n_years} years of filings"
 
 
 def _drivers(result: TrainResult, frame: pd.DataFrame, top_k: int = 5) -> list[dict]:

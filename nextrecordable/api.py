@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from .match import build_directory, match_rows, suggestions
 from .models.baseline import TrainResult, load_model
+from .normalize import state_code, zip5
 from .report import _clean, _table_exists, ensure_scores, risk_report, score_keys
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
@@ -150,7 +151,8 @@ def create_app(
                         "message": (
                             "More than one establishment matches closely; add a street address."
                             if m["status"] == "ambiguous" else
-                            f"No confident match for '{req.name}' in {req.state} {req.zip_code}. It may "
+                            f"No confident match for '{req.name}' in {state_code(req.state)} "
+                            f"{zip5(req.zip_code) or req.zip_code}. It may "
                             "not file with OSHA (most workplaces under 20 employees don't), or the "
                             "name on file may differ."
                         ),
