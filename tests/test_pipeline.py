@@ -7,9 +7,9 @@ import csv
 import duckdb
 import pytest
 
-from osha_risk.features import build_keyed_view, build_panel, panel_summary
-from osha_risk.load import load_summary_csv
-from osha_risk.schema import build_canonical_view
+from nextrecordable.features import build_keyed_view, build_panel, panel_summary
+from nextrecordable.load import load_summary_csv
+from nextrecordable.schema import build_canonical_view
 
 from .conftest import ita_row, write_ita_csv
 

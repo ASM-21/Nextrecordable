@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 from sklearn.isotonic import IsotonicRegression
 
-from osha_risk.models.baseline import (
+from nextrecordable.models.baseline import (
     CATEGORICAL_FEATURES,
     IsotonicMap,
     Vocab,
@@ -64,7 +64,7 @@ def test_scores_identical_in_a_fresh_process(world, tmp_path):
     frame.to_pickle(tmp_path / "frame.pkl")
     script = textwrap.dedent(f"""
         import json, pandas as pd
-        from osha_risk.models.baseline import load_model
+        from nextrecordable.models.baseline import load_model
         m = load_model(r"{root / 'model'}")
         p = m.predict(pd.read_pickle(r"{tmp_path / 'frame.pkl'}"))
         print(json.dumps({{"p": p["p"].tolist(), "rate": p["rate_per_hour"].tolist()}}))

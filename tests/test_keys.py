@@ -4,7 +4,7 @@ import random
 
 import duckdb
 
-from osha_risk.keys import build_keyed_table, python_key, state_sql
+from nextrecordable.keys import build_keyed_table, python_key, state_sql
 
 
 def test_sql_key_matches_python_key_on_messy_inputs():
@@ -25,7 +25,7 @@ def test_sql_key_matches_python_key_on_messy_inputs():
 
 
 def test_state_sql_matches_python():
-    from osha_risk.normalize import state_code
+    from nextrecordable.normalize import state_code
 
     con = duckdb.connect()
     for v in ["IL", " il ", "ct", "Ohio", "", None]:

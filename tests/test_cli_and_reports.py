@@ -6,7 +6,7 @@ import json
 
 from typer.testing import CliRunner
 
-from osha_risk.sanity import run_gates, summarize
+from nextrecordable.sanity import run_gates, summarize
 
 from .synthetic import build_synthetic_dataset
 from .synthetic_enforcement import build_synthetic_enforcement
@@ -50,7 +50,7 @@ def test_metrics_report_is_written(world):
 
 
 def test_cli_build_sanity_train(tmp_path, monkeypatch):
-    from osha_risk import cli, config
+    from nextrecordable import cli, config
 
     monkeypatch.setattr(config, "MODEL_DIR", tmp_path / "model")
     monkeypatch.setattr(config, "REPORTS_DIR", tmp_path / "reports")
@@ -59,7 +59,7 @@ def test_cli_build_sanity_train(tmp_path, monkeypatch):
 
     import duckdb
 
-    from osha_risk.load import load_summary_csv
+    from nextrecordable.load import load_summary_csv
 
     con = duckdb.connect(str(db))
     for year, path in build_synthetic_dataset(tmp_path / "ita", n_establishments=400).items():

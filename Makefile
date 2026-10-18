@@ -1,6 +1,6 @@
 .PHONY: help dev-install test lint fix run-all download load build sanity train serve explore clean
 
-CLI := python -m osha_risk.cli
+CLI := python -m nextrecordable.cli
 
 help:
 	@echo "make dev-install   install with dev tools"

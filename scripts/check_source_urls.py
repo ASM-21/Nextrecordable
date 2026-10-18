@@ -10,7 +10,7 @@ import sys
 
 import httpx
 
-from osha_risk.config import ITA_CASE_DETAIL_URLS, ITA_SUMMARY_URLS
+from nextrecordable.config import ITA_CASE_DETAIL_URLS, ITA_SUMMARY_URLS
 
 
 def main() -> int:
@@ -26,7 +26,7 @@ def main() -> int:
         if not (isinstance(status, int) and status < 400):
             failed.append((kind, year))
     if failed:
-        print(f"Stale or unreachable: {failed}. Update osha_risk/config.py.")
+        print(f"Stale or unreachable: {failed}. Update nextrecordable/config.py.")
         return 1
     return 0
 

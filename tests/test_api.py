@@ -12,8 +12,8 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     from fastapi.testclient import TestClient
 
-from osha_risk import api as api_module
-from osha_risk.api import create_app
+from nextrecordable import api as api_module
+from nextrecordable.api import create_app
 
 
 @pytest.fixture(scope="module")

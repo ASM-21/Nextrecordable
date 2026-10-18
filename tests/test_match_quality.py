@@ -13,8 +13,8 @@ import re
 
 import pytest
 
-from osha_risk.keys import python_key
-from osha_risk.match import match_rows
+from nextrecordable.keys import python_key
+from nextrecordable.match import match_rows
 
 SAMPLE = 200
 

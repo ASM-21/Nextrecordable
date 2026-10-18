@@ -8,9 +8,9 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from osha_risk import pipeline
-from osha_risk.enforcement import load_inspection_csv, load_violation_csv
-from osha_risk.load import load_summary_csv
+from nextrecordable import pipeline
+from nextrecordable.enforcement import load_inspection_csv, load_violation_csv
+from nextrecordable.load import load_summary_csv
 
 from .synthetic import build_establishments, build_synthetic_dataset
 from .synthetic_enforcement import build_synthetic_enforcement

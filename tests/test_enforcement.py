@@ -7,17 +7,17 @@ import csv
 import duckdb
 import pytest
 
-from osha_risk.enforcement import (
+from nextrecordable.enforcement import (
     attach_enforcement_to_panel,
     build_enforcement_aggregates,
     link_inspections,
     load_inspection_csv,
     load_violation_csv,
 )
-from osha_risk.features import build_keyed_view, build_panel
-from osha_risk.load import load_summary_csv
-from osha_risk.match import build_directory
-from osha_risk.schema import build_canonical_view
+from nextrecordable.features import build_keyed_view, build_panel
+from nextrecordable.load import load_summary_csv
+from nextrecordable.match import build_directory
+from nextrecordable.schema import build_canonical_view
 
 from .conftest import ita_row, write_ita_csv
 

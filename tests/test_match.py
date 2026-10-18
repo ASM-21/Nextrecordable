@@ -5,9 +5,9 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from osha_risk.keys import python_key
-from osha_risk.match import link, load_left, match_rows, normalize_inputs, suggestions
-from osha_risk.normalize import name_first_token, name_numbers, normalize_address, normalize_name
+from nextrecordable.keys import python_key
+from nextrecordable.match import link, load_left, match_rows, normalize_inputs, suggestions
+from nextrecordable.normalize import name_first_token, name_numbers, normalize_address, normalize_name
 
 
 @pytest.fixture

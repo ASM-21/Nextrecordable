@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from osha_risk.normalize import (
+from nextrecordable.normalize import (
     name_first_token,
     name_numbers,
     normalize_address,
