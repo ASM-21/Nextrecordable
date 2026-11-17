@@ -52,17 +52,45 @@ def connect(db_path: Path | str | None = None, read_only: bool = False) -> duckd
     return duckdb.connect(str(path), read_only=read_only)
 
 
-def read_csv_varchar(con: duckdb.DuckDBPyConnection, csv_path: Path, table: str, extra_select: str = "") -> int:
-    """Create `table` from a CSV with every column as VARCHAR. Returns row count."""
-    path = str(csv_path).replace("'", "''")
+def csv_sources(path: Path | str | list[Path] | list[str]) -> list[Path]:
+    """One CSV, a list of CSVs, or a directory of CSV chunks -> sorted file list.
+
+    DOL's bulk downloads (data.dol.gov) ship one table as several
+    `<date>_chunk_<n>.csv` files in a zip; chunks sort by their number.
+    """
+    if isinstance(path, list | tuple):
+        files = [Path(p) for p in path]
+    elif Path(path).is_dir():
+        def chunk_no(p: Path) -> tuple[int, str]:
+            digits = "".join(ch for ch in p.stem.rsplit("_", 1)[-1] if ch.isdigit())
+            return (int(digits) if digits else 0, p.name)
+        files = sorted(Path(path).glob("*.csv"), key=chunk_no)
+    else:
+        files = [Path(path)]
+    if not files:
+        raise FileNotFoundError(f"No CSV files at {path}")
+    return files
+
+
+def read_csv_varchar(con: duckdb.DuckDBPyConnection, csv_path: Path | str | list, table: str,
+                     extra_select: str = "", where: str = "") -> int:
+    """Create `table` from one or more CSVs with every column as VARCHAR. Returns row count.
+
+    parallel = false: real ITA files carry line breaks inside quoted fields
+    (addresses, industry descriptions), and DuckDB's parallel scanner refuses
+    those together with null_padding. The first real-data load died on line
+    4,151 of the 2019 file until this was set.
+    """
+    files = ", ".join("'" + str(p).replace("'", "''") + "'" for p in csv_sources(csv_path))
     extra = f", {extra_select}" if extra_select else ""
     con.execute(f"DROP TABLE IF EXISTS {table}")
     con.execute(
         f"""
         CREATE TABLE {table} AS
         SELECT *{extra}
-        FROM read_csv('{path}', header = true, all_varchar = true,
-                      null_padding = true, ignore_errors = true)
+        FROM read_csv([{files}], header = true, all_varchar = true, union_by_name = true,
+                      null_padding = true, ignore_errors = true, parallel = false)
+        {('WHERE ' + where) if where else ''}
         """
     )
     return con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -85,21 +113,30 @@ def load_summary_csv(
 
 
 def load_all_summary(con: duckdb.DuckDBPyConnection, raw_dir: Path | None = None) -> dict[int, int]:
-    """Extract and load every downloaded ITA summary zip. Returns {year: rows}."""
+    """Extract and load every ITA summary file in data/raw/ita_summary. Returns {year: rows}.
+
+    Accepts `ita_summary_<year>.zip` (what `download` writes) and a bare
+    `ita_summary_<year>.csv` (a file dropped in by hand; see DATA-GAPS.md).
+    When both exist for a year the zip wins, because it is the official file.
+    """
     summary_dir = (raw_dir or RAW_DIR) / "ita_summary"
     extract_root = PROCESSED_DIR / "ita_summary"
     counts: dict[int, int] = {}
-    for zip_path in sorted(summary_dir.glob("ita_summary_*.zip")):
+    sources: dict[int, Path] = {}
+    for path in sorted(summary_dir.glob("ita_summary_*.csv")) + sorted(summary_dir.glob("ita_summary_*.zip")):
         try:
-            year = int(zip_path.stem.rsplit("_", 1)[-1])
+            sources[int(path.stem.rsplit("_", 1)[-1])] = path
         except ValueError:
-            print(f"Skipping unrecognized file: {zip_path.name}")
-            continue
-        year_dir = extract_root / str(year)
-        if not year_dir.exists() or not list(year_dir.rglob("*.csv")):
-            print(f"Extracting {zip_path.name} ...")
-            extract_zip(zip_path, year_dir)
-        csv = find_csv(year_dir)
+            print(f"Skipping unrecognized file: {path.name}")
+    for year, zip_path in sorted(sources.items()):
+        if zip_path.suffix == ".csv":
+            csv = zip_path
+        else:
+            year_dir = extract_root / str(year)
+            if not year_dir.exists() or not list(year_dir.rglob("*.csv")):
+                print(f"Extracting {zip_path.name} ...")
+                extract_zip(zip_path, year_dir)
+            csv = find_csv(year_dir)
         if csv is None:
             print(f"  WARNING: no CSV found for year {year}")
             continue

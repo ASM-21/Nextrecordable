@@ -6,6 +6,10 @@ deleted citations, site_zip stored as an integer (leading zeros lost), and
 employer names spelled differently from their ITA filings. A share of
 inspections hit establishments that never file with ITA, as most real
 inspections do; those must stay unlinked.
+
+Since the first real run it also copies the data.dol.gov bulk layout:
+upper-case headers, dates as "2019-03-05 00:00:00+00:00", and pandas'
+placeholders for missing values ("nan" penalties, "NaT" dates).
 """
 
 from __future__ import annotations
@@ -86,7 +90,8 @@ def build_synthetic_enforcement(
                 "naics_code": est["naics_code"],
                 "insp_type": itype,
                 "insp_scope": rng.choice(["A", "B"]),
-                "open_date": f"{year}-{month:02d}-{rng.randint(1, 28):02d}",
+                "open_date": f"{year}-{month:02d}-{rng.randint(1, 28):02d} 00:00:00+00:00",
+                "close_case_date": "NaT",
             })
             base = {"H": 0.8, "I": 0.8, "A": 4.0}.get(itype, 1.6) * est["compliance_factor"]
             n_cit = max(0, round(rng.gauss(base, base ** 0.5)))
@@ -100,15 +105,15 @@ def build_synthetic_enforcement(
                     "delete_flag": "X" if rng.random() < 0.05 else "",
                     "standard": rng.choice(STANDARDS),
                     "viol_type": vtype,
-                    "issuance_date": f"{year}-{min(12, month + 2):02d}-15",
-                    "initial_penalty": initial,
+                    "issuance_date": f"{year}-{min(12, month + 2):02d}-15 00:00:00+00:00",
+                    "initial_penalty": "nan" if rng.random() < 0.05 else f"{initial}.00",
                     "current_penalty": int(initial * rng.uniform(0.4, 1.0)),
                     "gravity": rng.randint(1, 10),
                 })
     insp_path, viol_path = out_dir / "osha_inspection.csv", out_dir / "osha_violation.csv"
     for path, rows in ((insp_path, inspections), (viol_path, violations)):
         with open(path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-            w.writeheader()
-            w.writerows(rows)
+            w = csv.writer(f)
+            w.writerow([k.upper() for k in rows[0]])
+            w.writerows([list(r.values()) for r in rows])
     return insp_path, viol_path

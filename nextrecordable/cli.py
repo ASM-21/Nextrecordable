@@ -30,6 +30,8 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="Establishmen
 download_app = typer.Typer(no_args_is_help=True)
 app.add_typer(download_app, name="download", help="Download raw files from OSHA.")
 console = Console()
+# The panel looks at most ten years back for "years since last inspection".
+ENFORCEMENT_SINCE_YEAR = 2006
 STATE: dict[str, Path] = {"db": config.DB_PATH}
 
 
@@ -73,15 +75,16 @@ def load():
 
 @app.command("load-enforcement")
 def load_enforcement(
-    inspection: Annotated[Path, typer.Option(help="DOL osha_inspection CSV")],
-    violation: Annotated[Path, typer.Option(help="DOL osha_violation CSV")],
+    inspection: Annotated[Path, typer.Option(help="DOL osha_inspection CSV, or a directory of chunk CSVs")],
+    violation: Annotated[Path, typer.Option(help="DOL osha_violation CSV, or a directory of chunk CSVs")],
+    since_year: Annotated[int, typer.Option(help="Keep inspections opened in this year or later")] = ENFORCEMENT_SINCE_YEAR,
 ):
-    """Load DOL enforcement CSVs (download them from the DOL enforcement catalog)."""
+    """Load DOL enforcement CSVs (bulk files from data.dol.gov; see DATA-GAPS.md)."""
     from .enforcement import load_inspection_csv, load_violation_csv
 
     with _con() as con:
-        n_i = load_inspection_csv(con, inspection)
-        n_v = load_violation_csv(con, violation)
+        n_i = load_inspection_csv(con, inspection, since_year=since_year)
+        n_v = load_violation_csv(con, violation, inspection_table="osha_inspection")
     console.print(f"[green]{n_i:,} inspections, {n_v:,} violations[/green]")
 
 
@@ -140,7 +143,7 @@ def run_all(
     force: Annotated[bool, typer.Option("--force", help="Train even if a sanity gate fails")] = False,
 ):
     """Everything: download, load, (DOL files in data/raw/dol/), build, sanity, train."""
-    from .enforcement import load_inspection_csv, load_violation_csv
+    from .enforcement import find_dol_files, load_inspection_csv, load_violation_csv
     from .pipeline import build as run_build
     from .pipeline import train as run_train
     from .sanity import run_gates
@@ -151,11 +154,10 @@ def run_all(
         counts = load_all_summary(con)
         console.print(f"Loaded {sum(counts.values()):,} ITA rows across {len(counts)} years")
         dol = config.RAW_DIR / "dol"
-        insp = sorted(dol.glob("osha_inspection*.csv"))
-        viol = sorted(dol.glob("osha_violation*.csv"))
+        insp, viol = find_dol_files(dol)
         if insp and viol:
-            load_inspection_csv(con, insp[-1])
-            load_violation_csv(con, viol[-1])
+            load_inspection_csv(con, insp, since_year=ENFORCEMENT_SINCE_YEAR)
+            load_violation_csv(con, viol, inspection_table="osha_inspection")
             console.print(f"Loaded DOL enforcement files from {dol}")
         else:
             console.print(f"[yellow]No DOL files in {dol}; training without enforcement features[/yellow]")

@@ -20,6 +20,14 @@ features or labels before it existed:
     happened.
   * Adjacent years only. An establishment that skips a filing year must not
     get a two-year-old value as "lag1" or a two-year-ahead count as "next".
+  * Plausible exposure only. Real filings include hours like 16,831,600,000,000
+    for a seven-person shop and an 8-million-employee clinic. About 1.3% of
+    real rows report hours per employee outside what a year allows. One such
+    row drove the pooled 2019 case rate for every filer from 4.0 to 0.02, and
+    a tiny denominator produced "rates" of 4,000,000 per 100 workers. A row
+    whose exposure fails the rule below keeps its case counts but has NULL
+    hours and NULL rates (`exposure_ok` = false, `hours_reported` keeps what
+    was filed), so it cannot enter a rate, a benchmark or the rate model.
 """
 
 from __future__ import annotations
@@ -29,6 +37,20 @@ import duckdb
 from .keys import build_keyed_table
 
 RATE_DENOMINATOR = 200_000
+
+# Exposure plausibility. 8,760 is the number of hours in a year, so nobody
+# averages more; under 100 hours per employee a "rate" is a division artifact.
+MIN_HOURS_PER_EMPLOYEE = 100
+MAX_HOURS_PER_EMPLOYEE = 8_760
+MAX_EMPLOYEES = 100_000
+
+
+def exposure_ok_sql(employees: str, hours: str) -> str:
+    """SQL predicate: reported employees and hours describe a possible year."""
+    return (
+        f"({employees} BETWEEN 1 AND {MAX_EMPLOYEES} AND {hours} > 0 "
+        f"AND {hours} / {employees} BETWEEN {MIN_HOURS_PER_EMPLOYEE} AND {MAX_HOURS_PER_EMPLOYEE})"
+    )
 
 
 def build_keyed_view(con: duckdb.DuckDBPyConnection, *, output: str = "ita_keyed") -> int:
@@ -66,11 +88,14 @@ def build_panel(
                 data_year,
                 establishment_id,
                 created_timestamp,
+                created_at,
                 establishment_name, street_address, city, state_norm AS state, zip5,
                 name_norm, name_first, name_nums, address_norm,
                 naics_code, size_code,
-                annual_average_employees AS employees,
-                total_hours_worked AS hours_worked,
+                CASE WHEN annual_average_employees BETWEEN 1 AND {MAX_EMPLOYEES}
+                     THEN annual_average_employees END AS employees,
+                total_hours_worked AS hours_reported,
+                coalesce({exposure_ok_sql('annual_average_employees', 'total_hours_worked')}, false) AS exposure_ok,
                 coalesce(total_deaths, 0)      AS n_deaths,
                 coalesce(total_dafw_cases, 0)  AS n_dafw,
                 coalesce(total_djtr_cases, 0)  AS n_djtr,
@@ -83,9 +108,9 @@ def build_panel(
                 *,
                 ROW_NUMBER() OVER (
                     PARTITION BY estab_key, data_year, coalesce(establishment_id, '')
-                    ORDER BY TRY_CAST(created_timestamp AS TIMESTAMP) DESC NULLS LAST,
+                    ORDER BY created_at DESC NULLS LAST,
                              created_timestamp DESC NULLS LAST,
-                             hours_worked DESC NULLS LAST,
+                             hours_reported DESC NULLS LAST,
                              (n_deaths + n_dafw + n_djtr + n_other) DESC
                 ) AS rn,
                 COUNT(*) OVER (PARTITION BY estab_key, data_year) AS n_raw_rows,
@@ -97,20 +122,23 @@ def build_panel(
             SELECT
                 estab_key,
                 data_year AS year,
-                arg_max(establishment_name, coalesce(hours_worked, 0)) AS establishment_name,
-                arg_max(street_address, coalesce(hours_worked, 0))     AS street_address,
-                arg_max(city, coalesce(hours_worked, 0))               AS city,
+                arg_max(establishment_name, coalesce(hours_reported, 0)) AS establishment_name,
+                arg_max(street_address, coalesce(hours_reported, 0))     AS street_address,
+                arg_max(city, coalesce(hours_reported, 0))               AS city,
                 any_value(state)                                       AS state,
                 any_value(zip5)                                        AS zip5,
                 any_value(name_norm)                                   AS name_norm,
                 any_value(name_first)                                  AS name_first,
                 any_value(name_nums)                                   AS name_nums,
-                arg_max(address_norm, coalesce(hours_worked, 0))       AS address_norm,
-                arg_max(naics_code, coalesce(hours_worked, 0))         AS naics_code,
-                arg_max(size_code, coalesce(hours_worked, 0))          AS size_code,
-                arg_max(establishment_id, coalesce(hours_worked, 0))   AS establishment_id,
+                arg_max(address_norm, coalesce(hours_reported, 0))       AS address_norm,
+                arg_max(naics_code, coalesce(hours_reported, 0))         AS naics_code,
+                arg_max(size_code, coalesce(hours_reported, 0))          AS size_code,
+                arg_max(establishment_id, coalesce(hours_reported, 0))   AS establishment_id,
                 sum(employees)    AS employees,
-                sum(hours_worked) AS hours_worked,
+                -- every site in the key must be plausible, or the sum is not a denominator
+                CASE WHEN bool_and(exposure_ok) THEN sum(hours_reported) END AS hours_worked,
+                sum(hours_reported) AS hours_reported,
+                bool_and(exposure_ok) AS exposure_ok,
                 sum(n_deaths) AS n_deaths,
                 sum(n_dafw)   AS n_dafw,
                 sum(n_djtr)   AS n_djtr,

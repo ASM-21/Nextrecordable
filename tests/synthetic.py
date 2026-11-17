@@ -10,7 +10,12 @@ pipeline at some point:
   * leading-zero ZIPs (CT, MA, NJ), some written as ZIP+4;
   * amended filings: a second row for the same establishment and year with a
     later created_timestamp;
-  * skipped years: some establishments don't file one year.
+  * skipped years: some establishments don't file one year;
+  * (from the first real-data run) one year written with two decimals on
+    every number, identifiers included ("439896.00", size "2.00"); a
+    different created_timestamp spelling in each year, none of them ISO;
+    line breaks inside quoted address fields; and a few filings whose hours
+    are impossible for their headcount.
 
 Each establishment has two latent traits: risk_factor (drives injuries) and
 compliance_factor (drives citations and part of injuries), so enforcement
@@ -113,6 +118,23 @@ def _incidents(employees: int, risk: float, compliance: float, rng: random.Rando
     }
 
 
+DECIMAL_YEAR = 2021  # the real CY 2021 file writes "2021.00", "2.00", "439896.00"
+GARBAGE_HOURS_SHARE = 0.01
+
+
+def _timestamp(year: int, month: int, day: int, hour: int) -> str:
+    """created_timestamp the way each real year file spells it."""
+    y = year + 1
+    if year >= 2024:
+        return f"{y}-{month:02d}-{day:02d} {hour:02d}:00:00"
+    if year == 2023:
+        mon = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")[month - 1]
+        return f"{day:02d}{mon}{y % 100:02d}:{hour:02d}:00:00"
+    if year == 2022:
+        return f"{month}/{day}/{y}"
+    return f"{month}/{day}/{y} {hour}:00"
+
+
 def write_year_csv(establishments: list[dict], year: int, out_path: Path, *,
                    use_legacy_schema: bool, seed: int = 0) -> int:
     """One year's 300A file. Returns rows written."""
@@ -123,6 +145,11 @@ def write_year_csv(establishments: list[dict], year: int, out_path: Path, *,
         inc = _incidents(employees, est["risk_factor"], est["compliance_factor"], rng)
         if est["skip_year"] == year:
             continue
+        if rng.random() < GARBAGE_HOURS_SHARE:
+            inc["total_hours_worked"] = inc["total_hours_worked"] * 10_000_000
+        street = est["street_address"]
+        if rng.random() < 0.01:
+            street = street + "\nSuite 200"
         zip_value = est["zip_code"] if rng.random() > 0.2 else f"{est['zip_code']}-{rng.randint(1000, 9999)}"
         if use_legacy_schema:
             row = {
@@ -142,14 +169,14 @@ def write_year_csv(establishments: list[dict], year: int, out_path: Path, *,
                 "establishment_name": est["establishment_name"],
                 "establishment_id": est["establishment_id"],
                 "company_name": "Synthetic Holdings",
-                "street_address": est["street_address"],
+                "street_address": street,
                 "city": est["city"],
                 "state": est["state"],
                 "zip_code": zip_value,
                 "naics_code": est["naics_code"],
                 "size": _size_code(employees, year),
                 **inc,
-                "created_timestamp": f"{year + 1}-02-{rng.randint(1, 28):02d} 10:00:00",
+                "created_timestamp": _timestamp(year, 2, rng.randint(1, 28), 10),
                 "year_filing_for": year,
             }
         rows.append(row)
@@ -157,8 +184,14 @@ def write_year_csv(establishments: list[dict], year: int, out_path: Path, *,
             amended = dict(row)
             amended["total_other_cases"] = row["total_other_cases"] + 1
             if not use_legacy_schema:
-                amended["created_timestamp"] = f"{year + 1}-06-15 09:00:00"
+                amended["created_timestamp"] = _timestamp(year, 10, 15, 9)
             rows.append(amended)
+    if year == DECIMAL_YEAR:
+        keep_text = {"estab_zip", "zip_code", "created_timestamp"}
+        rows = [
+            {k: (f"{v}.00" if k not in keep_text and str(v).isdigit() else v) for k, v in r.items()}
+            for r in rows
+        ]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fields = list(dict.fromkeys(k for r in rows for k in r))
     with open(out_path, "w", newline="") as f:

@@ -11,6 +11,19 @@ synonyms. Field meanings and codes follow OSHA's summary data dictionary
     the category means the same thing in every year; `size_code_raw` keeps
     the original.
   * no_injuries_illnesses: 1 = had recordable cases, 2 = did not.
+
+Two things the first real files taught this module (each has a test):
+
+  * Some year files write every number with two decimals, identifiers
+    included: establishment_id "439896.00", size "2.00", year "2021.00".
+    Left alone, that year's establishments never share an ID with the years
+    around it and its size class is a category of its own. ID_TEXT_FIELDS
+    drop a trailing ".0", ".00", ...
+  * created_timestamp comes in at least four formats across years
+    ("1/2/2020 15:14", "1/2/2021 18:48:47", "1/2/2023", "02JAN24:13:03:00").
+    None of them casts to TIMESTAMP, so "latest submission wins" was decided
+    by string order, where "9/9/2020" beats "10/1/2020". `created_at` is the
+    parsed value; the panel orders by it.
 """
 
 from __future__ import annotations
@@ -45,6 +58,15 @@ TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "change_reason": ("change_reason",),
 }
 
+# Identifier-like text: a trailing ".0"/".00" is an export artifact, not part of the value.
+ID_TEXT_FIELDS: frozenset[str] = frozenset({"establishment_id", "ein", "naics_code", "size_code_raw"})
+
+TIMESTAMP_FORMATS: tuple[str, ...] = (
+    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
+    "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y",
+    "%d%b%y:%H:%M:%S", "%d%b%Y:%H:%M:%S",
+)
+
 REAL_FIELDS: dict[str, tuple[str, ...]] = {
     "annual_average_employees": ANNUAL_EMPLOYEES_CANDIDATES,
     "total_hours_worked": HOURS_CANDIDATES,
@@ -68,8 +90,21 @@ INT_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 CANONICAL_COLUMNS: tuple[str, ...] = (
-    ("file_year", "data_year", "size_code", *TEXT_FIELDS, *REAL_FIELDS, *INT_FIELDS)
+    ("file_year", "data_year", "size_code", "created_at", *TEXT_FIELDS, *REAL_FIELDS, *INT_FIELDS)
 )
+
+
+def _text(col: str, canonical: str) -> str:
+    expr = f'NULLIF(trim(CAST("{col}" AS VARCHAR)), \'\')'
+    if canonical in ID_TEXT_FIELDS:
+        expr = f"regexp_replace({expr}, '^([0-9]+)\\.0+$', '\\1')"
+    return expr
+
+
+def timestamp_sql(expr: str) -> str:
+    """Parse any of the timestamp spellings seen in ITA files; NULL when none fits."""
+    fmts = ", ".join(f"'{f}'" for f in TIMESTAMP_FORMATS)
+    return f"try_strptime({expr}, [{fmts}])"
 
 
 def table_columns(con: duckdb.DuckDBPyConnection, table: str) -> dict[str, str]:
@@ -103,7 +138,7 @@ def canonical_select_sql(con: duckdb.DuckDBPyConnection, table: str) -> str:
         col = resolve_column(con, table, candidates)
         found[canonical] = col
         pieces.append(
-            f'NULLIF(trim(CAST("{col}" AS VARCHAR)), \'\') AS {canonical}' if col
+            f"{_text(col, canonical)} AS {canonical}" if col
             else f"CAST(NULL AS VARCHAR) AS {canonical}"
         )
     for canonical, candidates in REAL_FIELDS.items():
@@ -116,9 +151,10 @@ def canonical_select_sql(con: duckdb.DuckDBPyConnection, table: str) -> str:
 
     file_year = "file_year" if "file_year" in table_columns(con, table) else "CAST(NULL AS INTEGER)"
     yff = _num(found["year_filing_for"], "INTEGER") if found["year_filing_for"] else "CAST(NULL AS INTEGER)"
-    size_raw = (
-        f'NULLIF(trim(CAST("{found["size_code_raw"]}" AS VARCHAR)), \'\')'
-        if found["size_code_raw"] else "CAST(NULL AS VARCHAR)"
+    size_raw = _text(found["size_code_raw"], "size_code_raw") if found["size_code_raw"] else "CAST(NULL AS VARCHAR)"
+    created = (
+        timestamp_sql(_text(found["created_timestamp"], "created_timestamp"))
+        if found["created_timestamp"] else "CAST(NULL AS TIMESTAMP)"
     )
     pieces.insert(0, f"CAST({file_year} AS INTEGER) AS file_year")
     pieces.insert(
@@ -126,6 +162,7 @@ def canonical_select_sql(con: duckdb.DuckDBPyConnection, table: str) -> str:
         f"CASE WHEN {yff} BETWEEN 2000 AND 2100 THEN {yff} ELSE CAST({file_year} AS INTEGER) END AS data_year",
     )
     pieces.insert(2, f"CASE WHEN {size_raw} IN ('21', '22') THEN '2' ELSE {size_raw} END AS size_code")
+    pieces.insert(3, f"{created} AS created_at")
     return "SELECT " + ",\n  ".join(pieces) + f"\nFROM {table}"
 
 
