@@ -126,3 +126,37 @@ def test_materialized_scores(world):
     assert 0 < rows[2] <= rows[3] <= 1
     assert 0 < rows[4] <= rows[5] < 1
     assert rows[6] == 0
+
+
+def test_served_rate_follows_the_holdout(world):
+    """The boosted rate is served only if it beat the credibility estimate on the holdout year."""
+    result, con = world["result"], world["con"]
+    skill = result.metrics["test_rate"]["deviance_skill_vs_credibility"]
+    assert result.rate_served == ("model" if skill > 0 else "credibility")
+    assert result.metrics["rate_served"] == result.rate_served
+
+    from dataclasses import replace
+
+    from nextrecordable.models.baseline import fetch_frame
+
+    frame = fetch_frame(con, result.panel_table, "hours_worked > 0 LIMIT 50")
+    plain = replace(result, rate_served="credibility")
+    preds = plain.predict(frame)
+    assert (preds["rate_per_hour"] == preds["baseline_rate_per_hour"]).all()
+    assert plain.contributions(frame)[1] == "log_odds"       # no rate drivers to show
+    boosted = replace(result, rate_served="model").predict(frame)
+    assert (boosted["rate_per_hour"] == boosted["boosted_rate_per_hour"]).all()
+
+
+def test_credibility_ignores_cases_without_usable_hours():
+    import pandas as pd
+
+    from nextrecordable.models.baseline import credibility_rate
+
+    frame = pd.DataFrame({
+        "naics4_pooled_tcr": [4.0, 4.0], "n_recordable": [1923.0, 4.0], "hours_worked": [None, 200_000.0],
+        "n_recordable_lag1": [None, None], "hours_lag1": [None, None],
+    })
+    rate = credibility_rate(frame, 1e-5) * 200_000
+    assert rate[0] == 4.0          # industry rate only; the 1,923 has no denominator
+    assert rate[1] == 4.0

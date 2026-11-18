@@ -14,8 +14,10 @@ years <= T, early-stop and calibrate on T+1, report on T+2):
    of the establishment's own last two years with its industry's rate. Size
    enters as exposure rather than as risk, and the trees learn multiplicative
    corrections to the actuarial estimate. Early stopping on the validation
-   year decides how much correction the data supports; with nothing to add,
-   the model stays at the credibility estimate instead of doing worse. This
+   year decides how much correction the data supports. That alone was not
+   enough on real data: corrections that helped on the validation year hurt
+   on the next one, so the holdout year now decides which rate is served
+   (`TrainResult.rate_served`), and both are always reported. This
    is the size-adjusted ranking (a 40-person shop and a 2,000-person plant
    compare fairly), the underwriting question, and what reports rank by.
 
@@ -281,6 +283,12 @@ def calibration_table(y_true: np.ndarray, y_pred: np.ndarray, n_bins: int = 10) 
     return out
 
 
+def expected_calibration_error(table: list[dict]) -> float:
+    """Count-weighted mean |predicted - observed| over calibration_table() bins."""
+    n = sum(b["n"] for b in table)
+    return float(sum(b["n"] * b["calibration_error"] for b in table) / n) if n else float("nan")
+
+
 def poisson_deviance(y: np.ndarray, mu: np.ndarray) -> float:
     """Mean Poisson deviance."""
     y = np.asarray(y, dtype=float)
@@ -300,6 +308,9 @@ def binary_metrics(frame: pd.DataFrame, p_model: np.ndarray, p_baseline: np.ndar
         "base_rate": base,
         "auc": float(roc_auc_score(y, p_model)) if 0 < base < 1 else float("nan"),
         "brier": float(brier_score_loss(y, p_model)),
+        # Brier score of always predicting the base rate, and skill against it.
+        "brier_reference": base * (1 - base),
+        "brier_skill": (1 - float(brier_score_loss(y, p_model)) / (base * (1 - base))) if 0 < base < 1 else float("nan"),
         "logloss": float(log_loss(y, np.clip(p_model, 1e-6, 1 - 1e-6), labels=[0, 1])),
         "lift_top10": lift_at_top_k(y, p_model),
         "lift_ceiling": (1.0 / base) if base > 0 else float("nan"),
@@ -317,10 +328,15 @@ def baseline_rates(frame: pd.DataFrame, fallback_rate_per_hour: float) -> dict[s
     """Per-hour rates from the two baselines a skeptic would propose."""
     ind = (frame["naics4_pooled_tcr"].astype(float) / RATE_DENOMINATOR).to_numpy()
     ind = np.where(np.isfinite(ind) & (ind > 0), ind, fallback_rate_per_hour)
-    cases = frame["n_recordable"].fillna(0).to_numpy(float) + frame["n_recordable_lag1"].fillna(0).to_numpy(float)
-    hours = frame["hours_worked"].fillna(0).to_numpy(float) + np.where(
-        frame["n_recordable_lag1"].notna(), frame["hours_lag1"].fillna(0).to_numpy(float), 0.0
-    )
+    # A year counts only when its hours are usable: cases without a denominator
+    # would be added to the numerator alone. (A real filer with 1,923 keyed-in
+    # cases and rejected hours got an "experience-rated" rate of 1,900.)
+    own = (frame["hours_worked"].fillna(0) > 0).to_numpy()
+    lag = (frame["n_recordable_lag1"].notna() & (frame["hours_lag1"].fillna(0) > 0)).to_numpy()
+    cases = (np.where(own, frame["n_recordable"].fillna(0).to_numpy(float), 0.0)
+             + np.where(lag, frame["n_recordable_lag1"].fillna(0).to_numpy(float), 0.0))
+    hours = (np.where(own, frame["hours_worked"].fillna(0).to_numpy(float), 0.0)
+             + np.where(lag, frame["hours_lag1"].fillna(0).to_numpy(float), 0.0))
     cred = (cases + CREDIBILITY_HOURS * ind) / (hours + CREDIBILITY_HOURS)
     return {"industry": ind, "credibility": cred}
 
@@ -332,7 +348,8 @@ def credibility_rate(frame: pd.DataFrame, fallback_rate_per_hour: float) -> np.n
 
 def rate_metrics(frame: pd.DataFrame, rate_model: np.ndarray, fallback_rate_per_hour: float) -> dict:
     """Judge per-hour rate forecasts on realized next-year cases over next-year hours."""
-    mask = (frame["hours_next"].fillna(0) > 0).to_numpy() & frame[COUNT_TARGET].notna().to_numpy()
+    mask = ((frame["hours_next"].fillna(0) > 0).to_numpy() & frame[COUNT_TARGET].notna().to_numpy()
+            & (frame["hours_worked"].fillna(0) > 0).to_numpy())
     f = frame[mask]
     if len(f) == 0:
         return {"n": 0}
@@ -383,6 +400,11 @@ class TrainResult:
     # Pooled training-year cases per hour; the industry fallback inside the
     # credibility estimate when a row has no NAICS rate.
     fallback_rate_per_hour: float = 0.0
+    # Which rate reports and scores use: "model" (boosted corrections) or
+    # "credibility" (the experience-rated estimate alone). Decided on the
+    # holdout year at training time: the boosted model is served only if it
+    # beats the estimate it starts from. On the first real run it did not.
+    rate_served: str = "model"
     feature_names: list[str] = field(default_factory=lambda: list(ALL_FEATURES))
     categorical_features: list[str] = field(default_factory=lambda: list(CATEGORICAL_FEATURES))
     metrics: dict[str, Any] = field(default_factory=dict)
@@ -408,14 +430,16 @@ class TrainResult:
             raw_rate = self.rate.predict(X, raw_score=True) if self.rate is not None else None
         p = self.calibrator.transform(p_raw) if self.calibrator else p_raw
         cred = credibility_rate(frame, self.fallback_rate_per_hour)
-        rate = cred * np.exp(raw_rate) if raw_rate is not None else np.full(len(frame), np.nan)
-        return {"p_raw": p_raw, "p": p, "rate_per_hour": rate, "baseline_rate_per_hour": cred}
+        boosted = cred * np.exp(raw_rate) if raw_rate is not None else np.full(len(frame), np.nan)
+        rate = boosted if self.rate_served == "model" else cred
+        return {"p_raw": p_raw, "p": p, "rate_per_hour": rate, "baseline_rate_per_hour": cred,
+                "boosted_rate_per_hour": boosted}
 
     def contributions(self, frame: pd.DataFrame) -> tuple[np.ndarray, str]:
         """Per-feature contributions: log-rate (rate model) or log-odds (binary)."""
         X = self.matrix(frame)
         with self._lock:
-            if self.rate is not None:
+            if self.rate is not None and self.rate_served == "model":
                 return self.rate.predict(X, pred_contrib=True)[:, :-1], "log_rate"
             return self.binary.predict(X, pred_contrib=True)[:, :-1], "log_odds"
 
@@ -520,8 +544,25 @@ def train_baseline(
         preds = result.predict(test)
         p_base = size_model.predict(_matrix(test, vocab, SIZE_BASELINE_FEATURES)) if size_model else None
         metrics["test_binary"] = binary_metrics(test, preds["p"], p_base)
+        # Reliability on the holdout year itself (the calibrator was fitted on the year before).
+        yt = test[TARGET].to_numpy(int)
+        metrics["test_calibration"] = calibration_table(yt, preds["p"])
+        metrics["test_ece"] = expected_calibration_error(metrics["test_calibration"])
+        # The same establishment appears in training years and in the holdout
+        # year. Scoring only establishments the model never saw shows how much
+        # of the headline is recognition rather than prediction.
+        known = set(train["estab_key"]) | set(val["estab_key"])
+        seen = test["estab_key"].isin(known).to_numpy()
+        for label, mask in (("seen", seen), ("unseen", ~seen)):
+            if mask.sum() >= 50 and 0 < yt[mask].mean() < 1:
+                metrics[f"test_binary_{label}_establishments"] = binary_metrics(
+                    test[mask], preds["p"][mask], p_base[mask] if p_base is not None else None)
         if rate is not None:
-            metrics["test_rate"] = rate_metrics(test, preds["rate_per_hour"], fallback)
+            metrics["test_rate"] = rate_metrics(test, preds["boosted_rate_per_hour"], fallback)
+            skill = metrics["test_rate"].get("deviance_skill_vs_credibility")
+            if skill is not None and not skill > 0:
+                result.rate_served = "credibility"
+        metrics["rate_served"] = result.rate_served
         # Flat aliases kept for older readers of meta.json.
         metrics["test_auc"] = metrics["test_binary"]["auc"]
         metrics["test_brier"] = metrics["test_binary"]["brier"]
@@ -661,6 +702,7 @@ def save_model(result: TrainResult, dest_dir: Path) -> None:
         "test_year": result.test_year,
         "panel_table": result.panel_table,
         "fallback_rate_per_hour": result.fallback_rate_per_hour,
+        "rate_served": result.rate_served,
         "rate_offset": "log(hours) + log(credibility rate)",
         "metrics": result.metrics,
         "calibration_table": result.calibration_table,
@@ -687,6 +729,7 @@ def load_model(model_dir: Path) -> TrainResult:
         test_year=meta["test_year"],
         panel_table=meta.get("panel_table", "ita_panel"),
         fallback_rate_per_hour=meta.get("fallback_rate_per_hour", 0.0),
+        rate_served=meta.get("rate_served", "model"),
         feature_names=meta["feature_names"],
         categorical_features=meta["categorical_features"],
         metrics=meta.get("metrics", {}),

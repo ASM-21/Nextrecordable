@@ -28,6 +28,11 @@ features or labels before it existed:
     whose exposure fails the rule below keeps its case counts but has NULL
     hours and NULL rates (`exposure_ok` = false, `hours_reported` keeps what
     was filed), so it cannot enter a rate, a benchmark or the rate model.
+    The same goes for impossible case counts (1,923 recordables at a
+    25-person site, three times, in the real 2023 file): `counts_ok` = false.
+    A next-year outcome is only a target when next year's filing passes both
+    checks; three such rows were the three largest terms in the first real
+    holdout deviance.
 """
 
 from __future__ import annotations
@@ -43,6 +48,20 @@ RATE_DENOMINATOR = 200_000
 MIN_HOURS_PER_EMPLOYEE = 100
 MAX_HOURS_PER_EMPLOYEE = 8_760
 MAX_EMPLOYEES = 100_000
+
+
+# More recordable cases than twice the headcount (and more than a handful) is a
+# keying error, not a year of injuries.
+MAX_CASES_PER_EMPLOYEE = 2
+MIN_CASES_TO_QUESTION = 5
+
+
+def counts_ok_sql(employees: str, cases: str) -> str:
+    """SQL predicate: the case count is possible for the reported headcount."""
+    return (
+        f"NOT ({cases} > {MIN_CASES_TO_QUESTION} "
+        f"AND {cases} > {MAX_CASES_PER_EMPLOYEE} * coalesce({employees}, 0))"
+    )
 
 
 def exposure_ok_sql(employees: str, hours: str) -> str:
@@ -91,11 +110,12 @@ def build_panel(
                 created_at,
                 establishment_name, street_address, city, state_norm AS state, zip5,
                 name_norm, name_first, name_nums, address_norm,
-                naics_code, size_code,
+                naics_code, size_code, establishment_type,
                 CASE WHEN annual_average_employees BETWEEN 1 AND {MAX_EMPLOYEES}
                      THEN annual_average_employees END AS employees,
                 total_hours_worked AS hours_reported,
                 coalesce({exposure_ok_sql('annual_average_employees', 'total_hours_worked')}, false) AS exposure_ok,
+                {counts_ok_sql('annual_average_employees', "(coalesce(total_deaths, 0) + coalesce(total_dafw_cases, 0) + coalesce(total_djtr_cases, 0) + coalesce(total_other_cases, 0))")} AS counts_ok,
                 coalesce(total_deaths, 0)      AS n_deaths,
                 coalesce(total_dafw_cases, 0)  AS n_dafw,
                 coalesce(total_djtr_cases, 0)  AS n_djtr,
@@ -134,11 +154,13 @@ def build_panel(
                 arg_max(naics_code, coalesce(hours_reported, 0))         AS naics_code,
                 arg_max(size_code, coalesce(hours_reported, 0))          AS size_code,
                 arg_max(establishment_id, coalesce(hours_reported, 0))   AS establishment_id,
+                arg_max(establishment_type, coalesce(hours_reported, 0)) AS establishment_type,
                 sum(employees)    AS employees,
                 -- every site in the key must be plausible, or the sum is not a denominator
-                CASE WHEN bool_and(exposure_ok) THEN sum(hours_reported) END AS hours_worked,
+                CASE WHEN bool_and(exposure_ok AND counts_ok) THEN sum(hours_reported) END AS hours_worked,
                 sum(hours_reported) AS hours_reported,
                 bool_and(exposure_ok) AS exposure_ok,
+                bool_and(counts_ok) AS counts_ok,
                 sum(n_deaths) AS n_deaths,
                 sum(n_dafw)   AS n_dafw,
                 sum(n_djtr)   AS n_djtr,
@@ -191,24 +213,25 @@ def build_panel(
                 LEAD(n_recordable, 1) OVER w AS _nrec_n,
                 LEAD(n_dart, 1)       OVER w AS _ndart_n,
                 LEAD(hours_worked, 1) OVER w AS _hrs_n,
-                LEAD(tcr, 1)          OVER w AS _tcr_n
+                LEAD(tcr, 1)          OVER w AS _tcr_n,
+                LEAD(exposure_ok AND counts_ok, 1) OVER w AS _ok_n
             FROM rates x
             WINDOW w AS (PARTITION BY estab_key ORDER BY year)
         ),
         aligned AS (
             SELECT
                 * EXCLUDE (_py1, _py2, _ny1, _tcr1, _tcr2, _dart1, _nrec1, _emp1, _hrs1,
-                           _nrec_n, _ndart_n, _hrs_n, _tcr_n),
+                           _nrec_n, _ndart_n, _hrs_n, _tcr_n, _ok_n),
                 CASE WHEN _py1 = year - 1 THEN _tcr1  END AS tcr_lag1,
                 CASE WHEN _py1 = year - 1 AND _py2 = year - 2 THEN _tcr2 END AS tcr_lag2,
                 CASE WHEN _py1 = year - 1 THEN _dart1 END AS dart_lag1,
                 CASE WHEN _py1 = year - 1 THEN _nrec1 END AS n_recordable_lag1,
                 CASE WHEN _py1 = year - 1 THEN _emp1  END AS employees_lag1,
                 CASE WHEN _py1 = year - 1 THEN _hrs1  END AS hours_lag1,
-                CASE WHEN _ny1 = year + 1 THEN _nrec_n  END AS n_recordable_next,
-                CASE WHEN _ny1 = year + 1 THEN _ndart_n END AS n_dart_next,
-                CASE WHEN _ny1 = year + 1 THEN _hrs_n   END AS hours_next,
-                CASE WHEN _ny1 = year + 1 THEN _tcr_n   END AS tcr_next
+                CASE WHEN _ny1 = year + 1 AND _ok_n THEN _nrec_n  END AS n_recordable_next,
+                CASE WHEN _ny1 = year + 1 AND _ok_n THEN _ndart_n END AS n_dart_next,
+                CASE WHEN _ny1 = year + 1 AND _ok_n THEN _hrs_n   END AS hours_next,
+                CASE WHEN _ny1 = year + 1 AND _ok_n THEN _tcr_n   END AS tcr_next
             FROM windowed
         )
         SELECT

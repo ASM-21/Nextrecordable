@@ -89,12 +89,18 @@ def load_enforcement(
 
 
 @app.command()
-def build(no_enforcement: Annotated[bool, typer.Option("--no-enforcement")] = False):
+def build(
+    no_enforcement: Annotated[bool, typer.Option("--no-enforcement")] = False,
+    reuse_links: Annotated[bool, typer.Option("--reuse-links", help="Keep existing inspection links")] = False,
+):
     """Canonical view, keys, panel, match directory (and enforcement if loaded)."""
+    from . import provenance
     from .pipeline import build as run_build
 
     with _con() as con:
-        out = run_build(con, enforcement=False if no_enforcement else None)
+        prov = provenance.record(con, config.RAW_DIR)
+        console.print(f"  data provenance: {prov['kind']}")
+        out = run_build(con, enforcement=False if no_enforcement else None, reuse_links=reuse_links)
     for k, v in out.items():
         console.print(f"  {k}: {v}")
 
@@ -161,6 +167,9 @@ def run_all(
             console.print(f"Loaded DOL enforcement files from {dol}")
         else:
             console.print(f"[yellow]No DOL files in {dol}; training without enforcement features[/yellow]")
+        from . import provenance
+
+        console.print(f"Data provenance: {provenance.record(con, config.RAW_DIR)['kind']}")
         run_build(con)
         ok = _print_gates(run_gates(con))
         if not ok and not force:
@@ -168,6 +177,51 @@ def run_all(
             raise typer.Exit(1)
         run_train(con, model_dir=config.MODEL_DIR, reports_dir=config.REPORTS_DIR, num_boost_round=rounds)
     console.print(f"[green]Done. Read {config.REPORTS_DIR / 'METRICS.md'}, then `nextrecordable serve`.[/green]")
+
+
+@app.command("synthetic-baseline")
+def synthetic_baseline(
+    n: Annotated[int, typer.Option(help="Synthetic establishments")] = 3000,
+):
+    """Run the whole pipeline on synthetic fixtures; write reports/synthetic_baseline.json.
+
+    METRICS.md compares the real run with this file. Everything it writes is
+    marked synthetic.
+    """
+    import json
+    import tempfile
+
+    import duckdb
+
+    from . import provenance
+    from .enforcement import load_inspection_csv, load_violation_csv
+    from .load import load_summary_csv
+    from .pipeline import build as run_build
+    from .pipeline import train as run_train
+
+    try:
+        from tests.synthetic import build_synthetic_dataset
+        from tests.synthetic_enforcement import build_synthetic_enforcement
+    except ImportError as exc:
+        raise typer.BadParameter("Run from a source checkout: the generators live in tests/.") from exc
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        con = duckdb.connect(str(root / "synthetic.duckdb"))
+        for year, path in build_synthetic_dataset(root / "ita", n_establishments=n).items():
+            load_summary_csv(path, year, con)
+        insp, viol = build_synthetic_enforcement(root / "dol", n_establishments=n)
+        load_inspection_csv(con, insp)
+        load_violation_csv(con, viol)
+        provenance.declare(con, "synthetic", "tests/synthetic.py and tests/synthetic_enforcement.py")
+        run_build(con)
+        run_train(con, model_dir=root / "model", reports_dir=root / "reports", num_boost_round=300,
+                  gate_kwargs={"min_rows_per_year": 100})
+        payload = json.loads((root / "reports" / "metrics.json").read_text())
+        con.close()
+    config.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    out = config.REPORTS_DIR / "synthetic_baseline.json"
+    out.write_text(json.dumps(payload, indent=2))
+    console.print(f"[yellow]SYNTHETIC[/yellow] baseline -> {out}")
 
 
 @app.command()

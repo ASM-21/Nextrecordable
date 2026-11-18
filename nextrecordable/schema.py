@@ -59,7 +59,9 @@ TEXT_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 # Identifier-like text: a trailing ".0"/".00" is an export artifact, not part of the value.
-ID_TEXT_FIELDS: frozenset[str] = frozenset({"establishment_id", "ein", "naics_code", "size_code_raw"})
+ID_TEXT_FIELDS: frozenset[str] = frozenset(
+    {"establishment_id", "ein", "naics_code", "size_code_raw", "establishment_type"}
+)
 
 TIMESTAMP_FORMATS: tuple[str, ...] = (
     "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",

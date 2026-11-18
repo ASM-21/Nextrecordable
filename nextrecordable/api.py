@@ -5,6 +5,12 @@ Endpoints
   GET  /health        liveness + model summary
   POST /score         one establishment by name + state + ZIP (+ street)
   POST /score-batch   CSV upload (a broker's book), ranked by expected case rate
+  POST /sst-exposure      position against OSHA's Site-Specific Targeting criteria (JSON)
+  POST /sst-exposure-pdf  the same report as a PDF
+
+Every response carries `data_notice`: null when the loaded files are OSHA's
+own, otherwise a sentence saying they are third-party copies, undeclared or
+synthetic (see provenance.py).
 
 Concurrency: every request runs on its own DuckDB cursor and keeps its
 matching rows in TEMP tables, which are private to that cursor. The shipped
@@ -29,9 +35,10 @@ from typing import Any
 
 import duckdb
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
+from . import provenance, sst
 from .match import build_directory, match_rows, suggestions
 from .models.baseline import TrainResult, load_model
 from .normalize import state_code, zip5
@@ -102,6 +109,9 @@ def create_app(
     if not _table_exists(con, directory):
         build_directory(con, panel_table=panel, output=directory)
     ensure_scores(con, model, panel_table=panel, scores_table=scores_table)
+    if not _table_exists(con, "sst_position"):
+        sst.build_sst_table(con, panel_table=panel)
+    data_notice = provenance.notice(con)
 
     app = FastAPI(
         title="nextrecordable",
@@ -136,35 +146,78 @@ def create_app(
             "test_capture_cases_top10": _clean(tb.get("capture_cases_top10")),
             "test_rate_deviance_skill_vs_credibility": _clean(tr.get("deviance_skill_vs_credibility")),
             "model_test_auc": _clean(tb.get("auc")),  # older clients
+            "rate_served": model.rate_served,
+            "data_provenance": provenance.summary(con)["kind"],
+            "data_notice": data_notice,
+            "sst_directive": sst.load_directive()["directive"],
         }
+
+    def resolve(cur, req: ScoreRequest):
+        """Matched directory row for a lookup, or a 404 with suggestions."""
+        m = match_rows(cur, [req.model_dump()], directory=directory).iloc[0]
+        if m["status"] != "matched":
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "ambiguous" if m["status"] == "ambiguous" else "no_match",
+                    "message": (
+                        "More than one establishment matches closely; add a street address."
+                        if m["status"] == "ambiguous" else
+                        f"No confident match for '{req.name}' in {state_code(req.state)} "
+                        f"{zip5(req.zip_code) or req.zip_code}. It may "
+                        "not file with OSHA (most workplaces under 20 employees don't), or the "
+                        "name on file may differ."
+                    ),
+                    "candidates": suggestions(cur, int(m["rec_id"]), directory=directory),
+                    "data_notice": data_notice,
+                },
+            )
+        return m
+
+    def match_info(m, req: ScoreRequest) -> dict[str, Any]:
+        return {"match_status": m["status"], "match_probability": _clean(m["match_probability"]),
+                "query": req.model_dump()}
+
+    def clean_tree(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: clean_tree(v) for k, v in value.items()}
+        if isinstance(value, list | tuple):
+            return [clean_tree(v) for v in value]
+        return _clean(value)
+
+    @app.post("/sst-exposure")
+    def sst_exposure(req: ScoreRequest) -> dict[str, Any]:
+        """Position against OSHA's SST selection criteria. Describes; never predicts an inspection."""
+        cur = cursor()
+        try:
+            m = resolve(cur, req)
+            report = clean_tree(sst.sst_exposure(cur, m["estab_key"], panel_table=panel))
+            report["match_info"] = match_info(m, req)
+            return report
+        finally:
+            cur.close()
+
+    @app.post("/sst-exposure-pdf")
+    def sst_exposure_pdf(req: ScoreRequest) -> Response:
+        cur = cursor()
+        try:
+            m = resolve(cur, req)
+            report = clean_tree(sst.sst_exposure(cur, m["estab_key"], panel_table=panel))
+        finally:
+            cur.close()
+        return Response(
+            content=sst.render_pdf(report), media_type="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="sst-exposure.pdf"'},
+        )
 
     @app.post("/score")
     def score(req: ScoreRequest) -> dict[str, Any]:
         cur = cursor()
         try:
-            m = match_rows(cur, [req.model_dump()], directory=directory).iloc[0]
-            if m["status"] != "matched":
-                raise HTTPException(
-                    status_code=404,
-                    detail={
-                        "error": "ambiguous" if m["status"] == "ambiguous" else "no_match",
-                        "message": (
-                            "More than one establishment matches closely; add a street address."
-                            if m["status"] == "ambiguous" else
-                            f"No confident match for '{req.name}' in {state_code(req.state)} "
-                            f"{zip5(req.zip_code) or req.zip_code}. It may "
-                            "not file with OSHA (most workplaces under 20 employees don't), or the "
-                            "name on file may differ."
-                        ),
-                        "candidates": suggestions(cur, int(m["rec_id"]), directory=directory),
-                    },
-                )
+            m = resolve(cur, req)
             report = risk_report(cur, m["estab_key"], model, panel_table=panel, scores_table=scores_table)
-            report["match_info"] = {
-                "match_status": m["status"],
-                "match_probability": _clean(m["match_probability"]),
-                "query": req.model_dump(),
-            }
+            report["match_info"] = match_info(m, req)
+            report["data_notice"] = data_notice
             return report
         finally:
             cur.close()
@@ -215,6 +268,7 @@ def create_app(
                 "n_unmatched": len(unmatched),
                 "status_counts": {k: int(v) for k, v in counts.items()},
                 "ranked_by": "expected_tcr_next (size-adjusted expected case rate), then p_any_next",
+                "data_notice": data_notice,
             },
             "results": results,
             "unmatched": unmatched,

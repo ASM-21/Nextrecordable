@@ -158,3 +158,22 @@ def test_dol_legacy_flat_files_still_found(tmp_path):
     insp, viol = find_dol_files(dol)
     assert [p.name for p in insp] == ["osha_inspection_20260101.csv"]
     assert [p.name for p in viol] == ["osha_violation_20260101.csv"]
+
+
+def test_impossible_case_count_is_not_a_rate_or_a_target(tmp_path):
+    """Three real 2023 filings report 1,923 recordables at sites of 25, 73 and 218 people."""
+    con = duckdb.connect()
+    _panel(con, {
+        2022: [ita_row("Keyed Wrong Inc", cases=2, hours=44_000, employees=25),
+               ita_row("Busy Plant", cases=30, hours=40_000, employees=20)],
+        2023: [ita_row("Keyed Wrong Inc", cases=1923, hours=44_000, employees=25),
+               ita_row("Busy Plant", cases=38, hours=40_000, employees=20)],
+    }, tmp_path)
+    rows = {(r[0], r[1]): r[2:] for r in con.execute(
+        "SELECT establishment_name, year, counts_ok, tcr, target_n_recordable_next, hours_next FROM ita_panel"
+    ).fetchall()}
+    assert rows[("Keyed Wrong Inc", 2023)][:2] == (False, None)
+    assert rows[("Keyed Wrong Inc", 2022)][2:] == (None, None)      # garbage next year is not a label
+    # High but possible counts stay: 38 cases among 20 people is under two per head.
+    assert rows[("Busy Plant", 2023)][0] is True
+    assert rows[("Busy Plant", 2022)][2] == 38
