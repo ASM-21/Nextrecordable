@@ -1,0 +1,14 @@
+{
+  "currency": "usd",
+  "note": "Prices from the launch plan. Quotas are first guesses, set in DECISIONS.md; change them here and the pricing page, the API limits and the tests follow.",
+  "tiers": [
+    {"id": "free", "name": "Free", "price_usd_month": 0, "monthly_lookups": 100, "batch_rows": 0, "sst_pdf": false,
+     "summary": "Single-establishment lookups and SST position on screen."},
+    {"id": "pro", "name": "Pro", "price_usd_month": 79, "monthly_lookups": 2000, "batch_rows": 1000, "sst_pdf": true,
+     "summary": "For one safety manager or one broker: batch uploads up to 1,000 rows and SST exposure PDFs."},
+    {"id": "team", "name": "Team", "price_usd_month": 499, "monthly_lookups": 25000, "batch_rows": 5000, "sst_pdf": true,
+     "summary": "For a brokerage team or an extension center serving many plants."},
+    {"id": "enterprise", "name": "Enterprise", "price_usd_month": null, "monthly_lookups": null, "batch_rows": 5000, "sst_pdf": true,
+     "summary": "Custom volume, data refresh schedule and terms. Contact us."}
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "directive": "CPL 02-01-067",
+  "title": "Site-Specific Targeting (SST)",
+  "issuer": "U.S. Department of Labor, Occupational Safety and Health Administration, Directorate of Enforcement Programs",
+  "signature_date": "2025-04-08",
+  "effective_date": "2025-05-20",
+  "terminates": "two years from the effective date, unless replaced by a new Instruction",
+  "expires_on_or_about": "2027-05-20",
+  "cancels": "CPL 02-01-064, Site-Specific Targeting (SST), February 7, 2023",
+  "list_name": "SST-23",
+  "data_years": [2021, 2022, 2023],
+  "selection_year": 2023,
+  "scope": {
+    "min_employees": 20,
+    "excluded_naics_prefixes": ["23"],
+    "summary": "Non-construction (general industry) workplaces with 20 or more employees that were required to submit Form 300A data under 29 CFR 1904.41."
+  },
+  "criteria": {
+    "high_rate": {
+      "label": "High-rate establishments",
+      "data_year": 2023,
+      "quote": "The SST plan selects individual establishments for inspection based on CY 2023 Form 300A data. Because average DART rates vary widely among industries, OSHA will set one DART rate for manufacturing, (NAICS 31-33) and a different DART rate for non-manufacturing (all other NAICS, except construction) as objective selection criteria. DART rates are set based on the most recent ITA submission. This method will allow OSHA to equally target manufacturing and non-manufacturing establishments.",
+      "numeric_cutoff_published": false,
+      "cutoff_note": "The directive states that two DART cutoffs exist (manufacturing, non-manufacturing) and gives neither number. This product therefore reports percentile position within each group and does not state a cutoff."
+    },
+    "upward_trending": {
+      "label": "Upward trending establishments",
+      "data_years": [2021, 2022, 2023],
+      "quote": "OSHA will identify establishments with rates at or above twice the private sector national average in CY 2022, that have continued to trend upward annually from CY 2021 through CY 2023.",
+      "numeric_cutoff_published": false,
+      "cutoff_note": "The directive names the benchmark (twice the CY 2022 private sector national average) but prints no number and does not say which rate. This product reads it as the DART rate, takes the average from BLS, and applies it to the establishment's CY 2022 DART rate. That reading is ours, not OSHA's.",
+      "reference_year": 2022,
+      "multiple": 2,
+      "private_sector_dart_rate": 1.7,
+      "private_sector_dart_source": "BLS Survey of Occupational Injuries and Illnesses, 2022: private industry cases with days away from work, job restriction or transfer, 1.7 per 100 full-time equivalent workers (news release USDL-23-2377, November 8, 2023).",
+      "private_sector_dart_verified": "Read from BLS state news releases that reproduce the national table; bls.gov's national release was not reachable from the build machine.",
+      "derived_threshold": 3.4
+    },
+    "low_rate": {
+      "label": "Low-rate establishments",
+      "data_year": 2023,
+      "quote": "To verify the reliability of the Form 300A data reported to OSHA, the agency will generate a random sample of establishments with low DART rates, using the CY 2023 data.",
+      "numeric_cutoff_published": false,
+      "cutoff_note": "\"Low\" is not defined in the directive, and selection within the group is random."
+    },
+    "non_responders": {
+      "label": "Non-responders",
+      "data_year": 2023,
+      "quote": "OSHA will generate a random sample of establishments that failed to provide the required Form 300A data to OSHA CY 2023.",
+      "numeric_cutoff_published": false,
+      "cutoff_note": "Selection within the group is random. A non-responder inspection ends as a \"No Inspection\" if the establishment shows it submitted CY 2023 data or was not required to."
+    }
+  },
+  "deletions": {
+    "previous_inspection_months": 36,
+    "quote": "The AO will delete an establishment from the inspection list if the establishment has received a comprehensive safety or health inspection within 36 months of the creation of the current inspection cycle.",
+    "other": [
+      "public sector employers (federal, state or local government)",
+      "approved participants in OSHA's Voluntary Protection Programs (VPP)",
+      "approved participants in SHARP (On-Site Consultation Program)"
+    ]
+  },
+  "program_size": {
+    "quote": "From April 7, 2023 - December 12, 2024, SST resulted in 652 inspections.",
+    "inspections": 652,
+    "period": "2023-04-07 to 2024-12-12",
+    "note": "Figure for the previous directive (CPL 02-01-064), as reported in the background section of CPL 02-01-067."
+  },
+  "list_visibility_quote": "Only OSHA and State Plan States will have access to this information.",
+  "source": {
+    "official_url": "https://www.osha.gov/sites/default/files/enforcement/directives/CPL-02-01-067.pdf",
+    "official_page": "https://www.osha.gov/enforcement/directives/cpl-02-01-067",
+    "text_read_from": "https://labor.hawaii.gov/hiosh/files/2025/08/CPL-02-01-067.pdf",
+    "text_read_note": "Hawaii's state plan (HIOSH) adopted the directive in its entirety and republishes the federal text, including the federal cover page (signature 4/8/2025, effective 5/20/2025). osha.gov refused connections from the build machine, so the federal text was read from that copy.",
+    "retrieved": "2026-11-16"
+  },
+  "successor": {
+    "announced": false,
+    "checked": "2026-11-16",
+    "note": "Web search found no successor SST directive and no announcement of one using CY 2024 or later data. OSHA's directives page could not be read directly; check it before relying on this."
+  }
+}

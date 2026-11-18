@@ -8,6 +8,14 @@ Endpoints
   POST /sst-exposure      position against OSHA's Site-Specific Targeting criteria (JSON)
   POST /sst-exposure-pdf  the same report as a PDF
 
+Accounts (when the app is built with an AccountStore, as in production):
+  GET  /pricing           tiers from data/tiers.json, Stripe Payment Links from env
+  GET  /account           tier and this month's usage for the X-API-Key
+  POST /stripe/webhook    creates accounts and emails keys (billing.py)
+Lookups (/score, /sst-exposure) work without a key, limited per client IP per
+day; with a key they count against the tier's monthly quota. /score-batch and
+/sst-exposure-pdf need a key on a tier that includes them.
+
 Every response carries `data_notice`: null when the loaded files are OSHA's
 own, otherwise a sentence saying they are third-party copies, undeclared or
 synthetic (see provenance.py).
@@ -28,17 +36,22 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import threading
+from collections import defaultdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
-from . import provenance, sst
+from . import billing, provenance, sst
+from .accounts import Account, AccountStore, QuotaExceeded, load_tiers
+from .mailer import Mailer, mailer_from_env
 from .match import build_directory, match_rows, suggestions
 from .models.baseline import TrainResult, load_model
 from .normalize import state_code, zip5
@@ -46,6 +59,8 @@ from .report import _clean, _table_exists, ensure_scores, risk_report, score_key
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_BATCH_ROWS = 5_000
+ANONYMOUS_DAILY_LOOKUPS = 20
+PAYMENT_LINK_ENV = "NEXTRECORDABLE_PAYMENT_LINK_{}"   # e.g. NEXTRECORDABLE_PAYMENT_LINK_PRO
 
 COLUMN_ALIASES: dict[str, str] = {
     "name": "name", "company": "name", "company_name": "name", "business_name": "name",
@@ -103,8 +118,16 @@ def create_app(
     panel_table: str | None = None,
     scores_table: str = "estab_scores",
     directory: str = "estab_directory",
+    accounts: AccountStore | None = None,
+    mailer: Mailer | None = None,
+    env: dict[str, str] | None = None,
 ) -> FastAPI:
-    """App bound to an open DuckDB connection and a trained model."""
+    """App bound to an open DuckDB connection and a trained model.
+
+    Without `accounts` every endpoint is open (tests, local use). With it,
+    keys, quotas and the Stripe webhook are enforced.
+    """
+    env = dict(os.environ if env is None else env)
     panel = panel_table or model.panel_table
     if not _table_exists(con, directory):
         build_directory(con, panel_table=panel, output=directory)
@@ -121,6 +144,45 @@ def create_app(
     app.state.con = con
     app.state.model = model
     cursor_lock = threading.Lock()
+    anon_lock = threading.Lock()
+    anon_counts: dict[tuple[str, str], int] = defaultdict(int)
+    mailer = mailer or (mailer_from_env(env) if accounts is not None else None)
+    base_url = env.get("NEXTRECORDABLE_BASE_URL", "http://127.0.0.1:8000")
+
+    def client_ip(request: Request) -> str:
+        # Behind the bundled Caddy proxy the client address arrives in X-Forwarded-For.
+        fwd = request.headers.get("x-forwarded-for", "")
+        return fwd.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+
+    def authorize(request: Request, key: str | None, *, units: int = 1, need: str | None = None) -> Account | None:
+        """Check the key and quota for a request. Returns the account, or None when anonymous."""
+        if accounts is None:
+            return None
+        account = accounts.verify(key) if key else None
+        if key and account is None:
+            raise HTTPException(status_code=401, detail="Unknown or inactive API key.")
+        if account is None:
+            if need is not None:
+                raise HTTPException(status_code=401, detail=f"An API key is required for {need}. See /pricing.")
+            day = datetime.now(UTC).strftime("%Y-%m-%d")
+            with anon_lock:
+                k = (client_ip(request), day)
+                if anon_counts[k] + units > ANONYMOUS_DAILY_LOOKUPS:
+                    raise HTTPException(status_code=429, detail=(
+                        f"Free lookups without a key are limited to {ANONYMOUS_DAILY_LOOKUPS} a day. See /pricing."))
+                anon_counts[k] += units
+            return None
+        limits = account.limits
+        if need == "batch uploads" and units > (limits.get("batch_rows") or 0):
+            raise HTTPException(status_code=403, detail=(
+                f"The {limits['name']} tier allows batch uploads of up to {limits.get('batch_rows') or 0:,} rows."))
+        if need == "SST exposure PDFs" and not limits.get("sst_pdf"):
+            raise HTTPException(status_code=403, detail=f"The {limits['name']} tier does not include PDFs.")
+        try:
+            accounts.meter(account, units)
+        except QuotaExceeded as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        return account
 
     def cursor():
         with cursor_lock:
@@ -186,8 +248,10 @@ def create_app(
         return _clean(value)
 
     @app.post("/sst-exposure")
-    def sst_exposure(req: ScoreRequest) -> dict[str, Any]:
+    def sst_exposure(req: ScoreRequest, request: Request,
+                     x_api_key: str | None = Header(None)) -> dict[str, Any]:
         """Position against OSHA's SST selection criteria. Describes; never predicts an inspection."""
+        authorize(request, x_api_key)
         cur = cursor()
         try:
             m = resolve(cur, req)
@@ -198,7 +262,9 @@ def create_app(
             cur.close()
 
     @app.post("/sst-exposure-pdf")
-    def sst_exposure_pdf(req: ScoreRequest) -> Response:
+    def sst_exposure_pdf(req: ScoreRequest, request: Request,
+                         x_api_key: str | None = Header(None)) -> Response:
+        authorize(request, x_api_key, need="SST exposure PDFs")
         cur = cursor()
         try:
             m = resolve(cur, req)
@@ -211,7 +277,9 @@ def create_app(
         )
 
     @app.post("/score")
-    def score(req: ScoreRequest) -> dict[str, Any]:
+    def score(req: ScoreRequest, request: Request,
+              x_api_key: str | None = Header(None)) -> dict[str, Any]:
+        authorize(request, x_api_key)
         cur = cursor()
         try:
             m = resolve(cur, req)
@@ -223,7 +291,8 @@ def create_app(
             cur.close()
 
     @app.post("/score-batch")
-    def score_batch(file: UploadFile = File(...)) -> dict[str, Any]:
+    def score_batch(request: Request, file: UploadFile = File(...),
+                    x_api_key: str | None = Header(None)) -> dict[str, Any]:
         # Sync on purpose: FastAPI runs it in a worker thread, so a large book
         # doesn't block the event loop while DuckDB works.
         if not file.filename or not file.filename.lower().endswith(".csv"):
@@ -234,6 +303,7 @@ def create_app(
         rows = parse_upload(data)
         if not rows:
             raise HTTPException(status_code=400, detail="CSV has no data rows.")
+        authorize(request, x_api_key, units=len(rows), need="batch uploads")
         cur = cursor()
         try:
             matches = match_rows(cur, rows, directory=directory)
@@ -274,7 +344,79 @@ def create_app(
             "unmatched": unmatched,
         }
 
+    @app.get("/pricing", response_class=HTMLResponse, include_in_schema=False)
+    def pricing() -> HTMLResponse:
+        return HTMLResponse(render_pricing(env))
+
+    @app.get("/account")
+    def account(x_api_key: str | None = Header(None)) -> dict[str, Any]:
+        if accounts is None:
+            raise HTTPException(status_code=404, detail="Accounts are not enabled on this server.")
+        acct = accounts.verify(x_api_key)
+        if acct is None:
+            raise HTTPException(status_code=401, detail="Unknown or inactive API key.")
+        return {"tier": acct.tier, "key_prefix": acct.key_prefix, "lookups_this_month": accounts.usage(acct.id),
+                "monthly_lookups": acct.limits.get("monthly_lookups"), "batch_rows": acct.limits.get("batch_rows"),
+                "sst_pdf": acct.limits.get("sst_pdf")}
+
+    @app.post("/stripe/webhook", include_in_schema=False)
+    async def stripe_webhook(request: Request) -> dict[str, Any]:
+        if accounts is None or mailer is None:
+            raise HTTPException(status_code=404, detail="Billing is not enabled on this server.")
+        payload = await request.body()
+        try:
+            event = billing.verify(payload, request.headers.get("stripe-signature"),
+                                   env.get("NEXTRECORDABLE_STRIPE_WEBHOOK_SECRET", ""))
+        except billing.SignatureError as exc:
+            raise HTTPException(status_code=400, detail=f"Bad signature: {exc}") from exc
+        link_tiers = json.loads(env.get("NEXTRECORDABLE_STRIPE_LINK_TIERS", "{}"))
+        return billing.handle_event(event, accounts, mailer, link_tiers=link_tiers, base_url=base_url)
+
     return app
+
+
+def render_pricing(env: dict[str, str]) -> str:
+    """Pricing page from data/tiers.json. Buttons use Payment Links from env; none set means no button."""
+    def esc(t: Any) -> str:
+        return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+    cards = []
+    for t in load_tiers().values():
+        price = ("Free" if t["price_usd_month"] == 0 else
+                 "Contact us" if t["price_usd_month"] is None else f"${t['price_usd_month']:,}/mo")
+        quota = ("Custom volume" if t["monthly_lookups"] is None else f"{t['monthly_lookups']:,} lookups a month")
+        batch = f"Batch uploads up to {t['batch_rows']:,} rows" if t["batch_rows"] else "No batch uploads"
+        pdf = "SST exposure PDFs" if t["sst_pdf"] else "SST position on screen only"
+        link = env.get(PAYMENT_LINK_ENV.format(t["id"].upper()))
+        if t["id"] == "free":
+            cta = '<a class="btn" href="/">Look up an establishment</a>'
+        elif link:
+            cta = f'<a class="btn" href="{esc(link)}">Subscribe</a>'
+        elif t["id"] == "enterprise" and env.get("NEXTRECORDABLE_CONTACT_EMAIL"):
+            cta = f'<a class="btn" href="mailto:{esc(env["NEXTRECORDABLE_CONTACT_EMAIL"])}">Contact</a>'
+        else:
+            cta = '<span class="btn off">Not yet available</span>'
+        cards.append(f"""<section class="tier" id="tier-{esc(t['id'])}"><h2>{esc(t['name'])}</h2>
+<p class="price">{esc(price)}</p><p>{esc(t['summary'])}</p>
+<ul><li>{esc(quota)}</li><li>{esc(batch)}</li><li>{esc(pdf)}</li></ul>{cta}</section>""")
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Pricing · nextrecordable</title>
+<style>
+body{{font-family:system-ui,sans-serif;margin:0;padding:24px 16px;background:#fafaf7;color:#1a1a1a}}
+main{{max-width:1040px;margin:0 auto}} h1{{margin:0 0 4px}} .lede{{color:#444;max-width:62ch}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:24px 0}}
+.tier{{background:#fff;border:1px solid #ddd;border-radius:10px;padding:18px}}
+.price{{font-size:1.6rem;font-weight:700;margin:4px 0}} ul{{padding-left:18px}}
+.btn{{display:inline-block;padding:9px 14px;border-radius:8px;background:#1a1a1a;color:#fff;text-decoration:none}}
+.btn.off{{background:#bbb}} .fine{{font-size:.85rem;color:#555;max-width:70ch}}
+</style></head><body><main>
+<h1>Pricing</h1>
+<p class="lede">Establishment injury history, peer position and OSHA Site-Specific Targeting position from
+OSHA's public injury logs and DOL enforcement records.</p>
+<div class="grid">{''.join(cards)}</div>
+<p class="fine">{esc(sst.STATEMENT)} Independent analysis of public data; not affiliated with, endorsed by, or
+produced on behalf of OSHA or the U.S. Department of Labor. Not legal advice.</p>
+</main></body></html>"""
 
 
 def build_app_from_env() -> FastAPI:
@@ -288,4 +430,5 @@ def build_app_from_env() -> FastAPI:
     con = duckdb.connect(str(db_path))
     model = load_model(model_dir)
     panel = os.environ.get("NEXTRECORDABLE_PANEL_TABLE") or model.panel_table
-    return create_app(con, model, panel_table=panel)
+    accounts_path = os.environ.get("NEXTRECORDABLE_ACCOUNTS_DB", str(db_path.parent / "accounts.sqlite"))
+    return create_app(con, model, panel_table=panel, accounts=AccountStore(accounts_path))
