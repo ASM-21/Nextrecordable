@@ -179,6 +179,32 @@ def run_all(
     console.print(f"[green]Done. Read {config.REPORTS_DIR / 'METRICS.md'}, then `nextrecordable serve`.[/green]")
 
 
+@app.command()
+def report():
+    """Rewrite reports/metrics.json and METRICS.md from the saved model (no retraining)."""
+    from .models.baseline import load_model
+    from .pipeline import write_reports
+
+    with _con() as con:
+        write_reports(con, load_model(config.MODEL_DIR), config.REPORTS_DIR)
+    console.print(f"[green]{config.REPORTS_DIR / 'METRICS.md'}[/green]")
+
+
+@app.command()
+def falsify(
+    skip_retrain: Annotated[bool, typer.Option("--skip-retrain", help="Skip retraining on earlier test years")] = False,
+):
+    """Try to break the headline metrics; write reports/falsification.json."""
+    from .falsify import run
+    from .models.baseline import load_model
+
+    with _con() as con:
+        rep = run(con, load_model(config.MODEL_DIR), out_path=config.REPORTS_DIR / "falsification.json",
+                  retrain_years=not skip_retrain)
+    console.print(f"[green]{config.REPORTS_DIR / 'falsification.json'}[/green]: "
+                  f"{len(rep['size_bands']['bands'])} size bands, {len(rep['other_years'])} extra test years")
+
+
 @app.command("synthetic-baseline")
 def synthetic_baseline(
     n: Annotated[int, typer.Option(help="Synthetic establishments")] = 3000,

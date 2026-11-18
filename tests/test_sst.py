@@ -139,6 +139,8 @@ def test_missing_selection_year_filing_is_reported_without_accusation(sst_con):
     nr = criterion(rep, "non_responders")
     assert nr["status"] == "no_filing_found" and rep["non_filer"]["status"] == "no_filing_found"
     assert "not a finding that a required filing was missed" in nr["position"]
+    churn = sst.churn(sst_con)
+    assert set(churn) == {2022, 2023} and churn[2023] > 0      # Gone Quiet Inc is in the 2023 share
     assert criterion(report(sst_con, "Rising Forge"), "non_responders")["status"] == "filing_found"
 
 

@@ -331,6 +331,11 @@ def render_metrics_md(payload: dict, synthetic: dict | None = None) -> str:
                   f"| meet both upward-trend conditions as this product reads them | {_fmt(sm['meet_both_upward_conditions'])} |",
                   f"| filed CY {sm['selection_year'] - 1} with 20+ employees, no CY {sm['selection_year']} filing found | "
                   f"{_fmt(sm['no_filing_found_selection_year'])} |"]
+        ch = sm.get("filing_churn") or {}
+        if ch:
+            lines.append("| establishments with 20+ employees not found the next year, by year | "
+                         + ", ".join(f"{y}: {_fmt(v, pct=True)}" for y, v in sorted(ch.items(), key=lambda kv: int(kv[0])))
+                         + " |")
         for g, st in sorted((sm.get("groups") or {}).items()):
             lines.append(f"| {g}: n, median / p75 / p90 / p95 DART | {_fmt(st['n'])}: {_fmt(st['p50'], digits=2)} / "
                          f"{_fmt(st['p75'], digits=2)} / {_fmt(st['p90'], digits=2)} / {_fmt(st['p95'], digits=2)} |")

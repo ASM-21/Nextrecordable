@@ -1,0 +1,437 @@
+{
+  "generated_at": "2026-11-18T03:20:53+00:00",
+  "package_version": "0.2.0",
+  "python": "3.13.18",
+  "data_provenance": {
+    "kind": "synthetic",
+    "note": "tests/synthetic.py and tests/synthetic_enforcement.py",
+    "notice": "SYNTHETIC DATA: these numbers come from generated test files, not from OSHA records. They describe no real establishment.",
+    "files": []
+  },
+  "raw_rows_by_table": {
+    "ita_summary_2019": 3036,
+    "ita_summary_2020": 2973,
+    "ita_summary_2021": 2961,
+    "ita_summary_2022": 2962,
+    "ita_summary_2023": 2949,
+    "ita_summary_2024": 3022
+  },
+  "panel_table": "ita_panel_enforced",
+  "panel": {
+    "total_rows": 17759,
+    "distinct_establishments": 2999,
+    "rows_with_lag": 14378,
+    "rows_with_target": 14394,
+    "target_base_rate": 0.8616784771432542,
+    "key_years_with_duplicates": 144,
+    "key_years_with_multiple_sites": 1
+  },
+  "exposure_checks": {
+    "rows": 17759,
+    "exposure_rejected": 166,
+    "counts_rejected": 0
+  },
+  "inspection_links": {
+    "fuzzy": 436,
+    "ambiguous": 1,
+    "exact_key": 5739,
+    "unlinked": 3056
+  },
+  "link_rates": {
+    "all_years": {
+      "counts": {
+        "unlinked": 3056,
+        "exact_key": 5739,
+        "fuzzy": 436,
+        "ambiguous": 1
+      },
+      "n": 9232,
+      "linked_share": 0.6688691507798961,
+      "fuzzy_share_of_linked": 0.07060728744939271
+    },
+    "panel_years": {
+      "counts": {
+        "unlinked": 3056,
+        "exact_key": 5739,
+        "fuzzy": 436,
+        "ambiguous": 1
+      },
+      "n": 9232,
+      "linked_share": 0.6688691507798961,
+      "fuzzy_share_of_linked": 0.07060728744939271
+    },
+    "panel_years_range": [
+      2019,
+      2024
+    ]
+  },
+  "split": {
+    "train_through": 2021,
+    "val_year": 2022,
+    "test_year": 2023
+  },
+  "rate_served": "model",
+  "metrics": {
+    "n_train": 8629,
+    "n_val": 2849,
+    "n_test": 2916,
+    "train_base_rate": 0.8660331440491367,
+    "val_base_rate": 0.8473148473148473,
+    "binary_best_iteration": 51,
+    "rate_best_iteration": 114,
+    "val_auc_raw": 0.8549376720090659,
+    "val_brier_raw": 0.1005416633136351,
+    "val_brier_calibrated": 0.09692672233840444,
+    "test_binary": {
+      "n": 2916,
+      "base_rate": 0.8628257887517147,
+      "auc": 0.841852146263911,
+      "brier": 0.09586311596681486,
+      "brier_reference": 0.11835744701669612,
+      "brier_skill": 0.1900542096578688,
+      "logloss": 0.3048291445415306,
+      "lift_top10": 1.1589825119236885,
+      "lift_ceiling": 1.1589825119236885,
+      "capture_cases_top10": 0.2906138873292158,
+      "capture_dart_top10": 0.32411545623836124,
+      "baseline_auc": 0.8056642488076311,
+      "baseline_capture_cases_top10": 0.36145423919146547,
+      "baseline_capture_dart_top10": 0.40865921787709497
+    },
+    "test_calibration": [
+      {
+        "bin": 1,
+        "n": 291,
+        "mean_predicted": 0.45644714511828516,
+        "observed_rate": 0.5395189003436426,
+        "calibration_error": 0.08307175522535742
+      },
+      {
+        "bin": 2,
+        "n": 292,
+        "mean_predicted": 0.6620534836822379,
+        "observed_rate": 0.684931506849315,
+        "calibration_error": 0.0228780231670771
+      },
+      {
+        "bin": 3,
+        "n": 291,
+        "mean_predicted": 0.7326249445454942,
+        "observed_rate": 0.7525773195876289,
+        "calibration_error": 0.01995237504213465
+      },
+      {
+        "bin": 4,
+        "n": 292,
+        "mean_predicted": 0.8029985382244104,
+        "observed_rate": 0.8356164383561644,
+        "calibration_error": 0.03261790013175403
+      },
+      {
+        "bin": 5,
+        "n": 292,
+        "mean_predicted": 0.9122380927768535,
+        "observed_rate": 0.9178082191780822,
+        "calibration_error": 0.00557012640122867
+      },
+      {
+        "bin": 6,
+        "n": 291,
+        "mean_predicted": 0.9543375709407823,
+        "observed_rate": 0.9450171821305842,
+        "calibration_error": 0.009320388810198144
+      },
+      {
+        "bin": 7,
+        "n": 292,
+        "mean_predicted": 0.9802816901408453,
+        "observed_rate": 0.9691780821917808,
+        "calibration_error": 0.011103607949064509
+      },
+      {
+        "bin": 8,
+        "n": 291,
+        "mean_predicted": 0.9895931242938344,
+        "observed_rate": 0.9862542955326461,
+        "calibration_error": 0.003338828761188295
+      },
+      {
+        "bin": 9,
+        "n": 292,
+        "mean_predicted": 0.9950000000000001,
+        "observed_rate": 1.0,
+        "calibration_error": 0.004999999999999893
+      },
+      {
+        "bin": 10,
+        "n": 292,
+        "mean_predicted": 0.9950000000000001,
+        "observed_rate": 0.9965753424657534,
+        "calibration_error": 0.0015753424657533044
+      }
+    ],
+    "test_ece": 0.01942983342066457,
+    "test_binary_seen_establishments": {
+      "n": 2915,
+      "base_rate": 0.8631217838765008,
+      "auc": 0.8421600503643848,
+      "brier": 0.0956780361711133,
+      "brier_reference": 0.11814257007434781,
+      "brier_skill": 0.19014766556286566,
+      "logloss": 0.30438653046590775,
+      "lift_top10": 1.1585850556438793,
+      "lift_ceiling": 1.1585850556438793,
+      "capture_cases_top10": 0.2906138873292158,
+      "capture_dart_top10": 0.32411545623836124,
+      "baseline_auc": 0.8065732694215666,
+      "baseline_capture_cases_top10": 0.36145423919146547,
+      "baseline_capture_dart_top10": 0.40865921787709497
+    },
+    "test_rate": {
+      "n": 2892,
+      "realized_pooled_tcr": 4.5910245030041175,
+      "model": {
+        "poisson_deviance": 1.3436091958465266,
+        "spearman_vs_realized_tcr": 0.5310202831640226,
+        "top10_pooled_rate_lift": 2.417899776342675,
+        "predicted_over_actual_cases": 1.002675757083932,
+        "capture_cases_top10": 0.47577797655477616
+      },
+      "industry": {
+        "poisson_deviance": 3.4655656158079164,
+        "spearman_vs_realized_tcr": 0.016318069636184818,
+        "top10_pooled_rate_lift": 1.117622641420826,
+        "predicted_over_actual_cases": 0.998527824461645,
+        "capture_cases_top10": 0.42257897462454685
+      },
+      "credibility": {
+        "poisson_deviance": 1.4046565358511458,
+        "spearman_vs_realized_tcr": 0.5245592842944675,
+        "top10_pooled_rate_lift": 2.2318990946486847,
+        "predicted_over_actual_cases": 0.9945267927205157,
+        "capture_cases_top10": 0.47422437738336237
+      },
+      "largest_sites_capture_cases_top10": 0.4210724542159032,
+      "deviance_skill_vs_industry": 0.6122972856962354,
+      "deviance_skill_vs_credibility": 0.04346068839357076
+    },
+    "rate_served": "model",
+    "test_auc": 0.841852146263911,
+    "test_brier": 0.09586311596681486,
+    "test_base_rate": 0.8628257887517147
+  },
+  "binary_feature_importance_top10": [
+    [
+      "employees",
+      7395.449973583221
+    ],
+    [
+      "hours_worked",
+      4450.0982937812805
+    ],
+    [
+      "n_recordable",
+      3076.141553878784
+    ],
+    [
+      "tcr_lag1",
+      709.8686690330505
+    ],
+    [
+      "employees_lag1",
+      620.5407099723816
+    ],
+    [
+      "n_djtr",
+      588.2034978866577
+    ],
+    [
+      "tcr_vs_naics4_median",
+      581.5824120044708
+    ],
+    [
+      "tcr",
+      534.3626818656921
+    ],
+    [
+      "n_recordable_lag1",
+      518.1713192462921
+    ],
+    [
+      "naics4_n_estabs",
+      373.1997094154358
+    ]
+  ],
+  "rate_feature_importance_top10": [
+    [
+      "tcr",
+      2247.6799960136414
+    ],
+    [
+      "tcr_lag2",
+      2166.9353909492493
+    ],
+    [
+      "state",
+      1954.046406507492
+    ],
+    [
+      "employees_lag1",
+      1521.8047012090683
+    ],
+    [
+      "employees",
+      1320.3447878360748
+    ],
+    [
+      "tcr_vs_naics4_median",
+      1310.2451325654984
+    ],
+    [
+      "hours_worked",
+      1208.8535389900208
+    ],
+    [
+      "tcr_lag1",
+      1150.5510911941528
+    ],
+    [
+      "dart_rate",
+      1096.6544584035873
+    ],
+    [
+      "dart_lag1",
+      829.0578424930573
+    ]
+  ],
+  "sst": {
+    "establishments_in_data_years": 2999,
+    "filed_selection_year": 2934,
+    "in_comparison": 2649,
+    "meet_both_upward_conditions": 59,
+    "no_filing_found_selection_year": 61,
+    "groups": {
+      "non_manufacturing": {
+        "n": 306,
+        "share_zero": 0.3790849673202614,
+        "p50": 1.4181980577199835,
+        "p75": 2.7997002959466464,
+        "p90": 4.6698621391865025,
+        "p95": 6.791957022325203,
+        "n_upward_both": 7,
+        "n_with_three_years": 299
+      },
+      "manufacturing": {
+        "n": 2343,
+        "share_zero": 0.3525394793000427,
+        "p50": 1.3967748468785575,
+        "p75": 2.923249822415783,
+        "p90": 4.630755579756979,
+        "p95": 6.05288891547989,
+        "n_upward_both": 52,
+        "n_with_three_years": 2242
+      }
+    },
+    "selection_year": 2023,
+    "selection_year_snapshot": null
+  },
+  "sanity": {
+    "counts": {
+      "pass": 13
+    },
+    "ok": true,
+    "gates": [
+      {
+        "name": "years_loaded",
+        "status": "pass",
+        "value": 6,
+        "rule": ">= 4 years (fail < 3)",
+        "note": "years: [2019, 2020, 2021, 2022, 2023, 2024]"
+      },
+      {
+        "name": "rows_per_year",
+        "status": "pass",
+        "value": 2949,
+        "rule": ">= 100 rows in every year",
+        "note": ""
+      },
+      {
+        "name": "zip5_valid_share",
+        "status": "pass",
+        "value": 1.0,
+        "rule": ">= 0.98 (fail < 0.90)",
+        "note": ""
+      },
+      {
+        "name": "leading_zero_zips_kept",
+        "status": "pass",
+        "value": 1.0,
+        "rule": ">= 0.95 of CT/MA/ME/NH/NJ/PR/RI/VT ZIPs start with 0",
+        "note": "falls when a loader types ZIP as an integer"
+      },
+      {
+        "name": "hours_per_employee_median",
+        "status": "pass",
+        "value": 1951.7382550335572,
+        "rule": "1,200 to 2,600 hours (fail outside 500 to 4,000)",
+        "note": ""
+      },
+      {
+        "name": "hours_per_employee_outliers",
+        "status": "pass",
+        "value": 0.009383902139306262,
+        "rule": "<= 2% outside 100 to 8,760 hours per employee",
+        "note": ""
+      },
+      {
+        "name": "duplicate_key_years",
+        "status": "pass",
+        "value": 0.008108564671434202,
+        "rule": "<= 5% of key-years had more than one filing (fail > 15%)",
+        "note": "deduplicated in the panel; a high share means the key is too coarse"
+      },
+      {
+        "name": "year_filing_for_vs_file_year",
+        "status": "pass",
+        "value": 0.0,
+        "rule": "<= 5% of rows report a different year than their file",
+        "note": "data_year follows year_filing_for either way"
+      },
+      {
+        "name": "hard_id_split_across_keys",
+        "status": "pass",
+        "value": 0.0,
+        "rule": "<= 2% of establishment_ids map to more than one key in a year",
+        "note": ""
+      },
+      {
+        "name": "size_code_harmonized",
+        "status": "pass",
+        "value": 0,
+        "rule": "no 21/22 size codes after harmonization",
+        "note": ""
+      },
+      {
+        "name": "target_base_rate",
+        "status": "pass",
+        "value": 0.8616784771432542,
+        "rule": "0.20 to 0.95",
+        "note": ""
+      },
+      {
+        "name": "cross_year_link_share",
+        "status": "pass",
+        "value": 0.8096176586519511,
+        "rule": ">= 30% of rows have last year's filing",
+        "note": "low means establishment keys don't persist across years"
+      },
+      {
+        "name": "inspection_link_share",
+        "status": "pass",
+        "value": 0.6688691507798961,
+        "rule": ">= 15% of inspections in panel years link to an ITA filer",
+        "note": "most inspections hit small or non-filing sites, so this is never near 100%"
+      }
+    ]
+  }
+}

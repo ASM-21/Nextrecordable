@@ -1,0 +1,186 @@
+{
+  "split": {
+    "train_through": 2020,
+    "val_year": 2021,
+    "test_year": 2022
+  },
+  "size_bands": {
+    "overall": {
+      "model": 0.8593859670545756,
+      "size_naics_baseline": 0.8125916757128002,
+      "hours_worked_only": 0.7774374459510578,
+      "had_case_this_year": 0.7452538746582607,
+      "cases_this_year": 0.8151574377793143
+    },
+    "bands": [
+      {
+        "employees": "1-19",
+        "n": 36438,
+        "base_rate": 0.22649431911740492,
+        "model": 0.7771808622561621,
+        "size_naics_baseline": 0.749428660461409,
+        "had_case_this_year": 0.6454431104350462
+      },
+      {
+        "employees": "20-49",
+        "n": 63838,
+        "base_rate": 0.5337886525267083,
+        "model": 0.732894185387744,
+        "size_naics_baseline": 0.6395073585066089,
+        "had_case_this_year": 0.6556315752739468
+      },
+      {
+        "employees": "50-99",
+        "n": 43499,
+        "base_rate": 0.7463389962987654,
+        "model": 0.7876061826569074,
+        "size_naics_baseline": 0.6728413549807727,
+        "had_case_this_year": 0.6771815974711098
+      },
+      {
+        "employees": "100-249",
+        "n": 35396,
+        "base_rate": 0.8660583116736355,
+        "model": 0.8383301193298769,
+        "size_naics_baseline": 0.7071925513237987,
+        "had_case_this_year": 0.6848444963718567
+      },
+      {
+        "employees": "250-999",
+        "n": 16084,
+        "base_rate": 0.9053096244715245,
+        "model": 0.8987144578857084,
+        "size_naics_baseline": 0.7664786981008598,
+        "had_case_this_year": 0.7244800700997363
+      },
+      {
+        "employees": "1,000+",
+        "n": 3472,
+        "base_rate": 0.9297235023041475,
+        "model": 0.9267437077213724,
+        "size_naics_baseline": 0.8155331423812135,
+        "had_case_this_year": 0.7758039287382941
+      }
+    ]
+  },
+  "identity": {
+    "n_test": 198962,
+    "n_with_establishment_id": 198962,
+    "key_seen": {
+      "n": 134984,
+      "base_rate": 0.6378533752148403,
+      "model": 0.8645293817471705,
+      "size_naics_baseline": 0.8145931498835661
+    },
+    "key_unseen": {
+      "n": 63978,
+      "base_rate": 0.581199787426928,
+      "model": 0.8461667549271827,
+      "size_naics_baseline": 0.8052643817921962
+    },
+    "key_unseen_but_id_seen": {
+      "n": 1945,
+      "base_rate": 0.6375321336760925,
+      "model": 0.8502121940059483,
+      "size_naics_baseline": 0.7868908716540839
+    },
+    "unseen_by_key_and_id": {
+      "n": 62033,
+      "base_rate": 0.579433527316106,
+      "model": 0.8459743202182377,
+      "size_naics_baseline": 0.8056944014606235
+    }
+  },
+  "denominators": {
+    "rate_by_hours_band": [
+      {
+        "hours_worked": "1-40,000",
+        "approx_fte": "0-20",
+        "n": 49335,
+        "share_of_next_year_cases": 0.03142652185863083,
+        "spearman_model": 0.2827859169172541,
+        "spearman_credibility": 0.2936647469493121,
+        "skill_vs_credibility": -0.167757177740246,
+        "skill_vs_industry": -0.07394087951829786
+      },
+      {
+        "hours_worked": "40,000-200,000",
+        "approx_fte": "20-100",
+        "n": 100152,
+        "share_of_next_year_cases": 0.26165692903714366,
+        "spearman_model": 0.49033384037366873,
+        "spearman_credibility": 0.4758279676412512,
+        "skill_vs_credibility": -0.00613259497432006,
+        "skill_vs_industry": 0.2530553912162461
+      },
+      {
+        "hours_worked": "200,000-1,000,000",
+        "approx_fte": "100-500",
+        "n": 40207,
+        "share_of_next_year_cases": 0.33772106395814966,
+        "spearman_model": 0.723113034610541,
+        "spearman_credibility": 0.7254783889679326,
+        "skill_vs_credibility": -0.03429027519307137,
+        "skill_vs_industry": 0.4377966311724135
+      },
+      {
+        "hours_worked": "1,000,000+",
+        "approx_fte": "500+",
+        "n": 7277,
+        "share_of_next_year_cases": 0.35915829473825867,
+        "spearman_model": 0.8468191249884257,
+        "spearman_credibility": 0.854421784792812,
+        "skill_vs_credibility": -0.23095609137288764,
+        "skill_vs_industry": 0.47989391002027415
+      }
+    ],
+    "sst_top_decile": [
+      {
+        "sst_group": "manufacturing",
+        "n_top_decile": 5462,
+        "with_two_or_fewer_dart_cases": 1060,
+        "share_two_or_fewer": 0.19406810692054194,
+        "under_50_fte": 2683,
+        "share_under_50_fte": 0.4912120102526547
+      },
+      {
+        "sst_group": "non_manufacturing",
+        "n_top_decile": 17793,
+        "with_two_or_fewer_dart_cases": 3604,
+        "share_two_or_fewer": 0.20255156522227843,
+        "under_50_fte": 10109,
+        "share_under_50_fte": 0.5681447760355196
+      }
+    ],
+    "cases_median_to_p90_at_50_fte": {
+      "manufacturing": 2.4230917676763077,
+      "non_manufacturing": 3.4062668872813817
+    }
+  },
+  "other_years": [
+    {
+      "train_through": 2019,
+      "val_year": 2020,
+      "test_year": 2021,
+      "n_test": 196781,
+      "auc": 0.8719594670538282,
+      "baseline_auc": 0.8322667162333348,
+      "brier_skill": 0.39021828253698054,
+      "capture_cases_top10": 0.506027364874346,
+      "rate_skill_vs_credibility": 0.0004051578965359459,
+      "rate_skill_vs_industry": 0.39204533550159104
+    },
+    {
+      "train_through": 2020,
+      "val_year": 2021,
+      "test_year": 2022,
+      "n_test": 198962,
+      "auc": 0.8593859670545756,
+      "baseline_auc": 0.8125916757128002,
+      "brier_skill": 0.3742426698265616,
+      "capture_cases_top10": 0.4984826176755368,
+      "rate_skill_vs_credibility": -0.07050562913210112,
+      "rate_skill_vs_industry": 0.3403972368157392
+    }
+  ]
+}

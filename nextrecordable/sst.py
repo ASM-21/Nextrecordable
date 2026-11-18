@@ -181,7 +181,40 @@ def build_sst_table(
         """
     )
     build_group_stats(con, table=output)
+    build_churn(con, panel_table=panel_table)
     return con.execute(f"SELECT COUNT(*) FROM {output}").fetchone()[0]
+
+
+def build_churn(con, *, panel_table: str = "ita_panel", output: str = "sst_filing_churn") -> None:
+    """Per year: share of last year's in-scope filers (20+ employees, not construction) not found this year.
+
+    The "no filing found" flag is only meaningful against this background:
+    in complete years about a third of establishments that filed one year are
+    not found under the same name, state and ZIP the next (closures, renames,
+    moves, dropping below the requirement).
+    """
+    min_emp = int(load_directive()["scope"]["min_employees"])
+    con.execute(f"DROP TABLE IF EXISTS {output}")
+    con.execute(
+        f"""
+        CREATE TABLE {output} AS
+        SELECT a.year + 1 AS year,
+               COUNT(*) AS prior_filers,
+               COUNT(*) FILTER (WHERE b.estab_key IS NULL) AS not_found,
+               COUNT(*) FILTER (WHERE b.estab_key IS NULL) * 1.0 / COUNT(*) AS share_not_found
+        FROM {panel_table} a
+        LEFT JOIN {panel_table} b ON b.estab_key = a.estab_key AND b.year = a.year + 1
+        WHERE a.year < (SELECT max(year) FROM {panel_table})
+          AND a.employees >= {min_emp} AND substr(coalesce(a.naics_code, ''), 1, 2) <> '23'
+        GROUP BY 1
+        """
+    )
+
+
+def churn(con, *, table: str = "sst_filing_churn") -> dict[int, float]:
+    if not _exists(con, table):
+        return {}
+    return {int(y): float(v) for y, v in con.execute(f"SELECT year, share_not_found FROM {table} ORDER BY 1").fetchall()}
 
 
 def build_group_stats(con, *, table: str = "sst_position", output: str = "sst_group_stats") -> None:
@@ -230,7 +263,7 @@ def program_summary(con, *, table: str = "sst_position") -> dict[str, Any]:
     ).fetchone()
     keys = ("establishments_in_data_years", "filed_selection_year", "in_comparison",
             "meet_both_upward_conditions", "no_filing_found_selection_year")
-    return {**dict(zip(keys, row, strict=True)), "groups": group_stats(con),
+    return {**dict(zip(keys, row, strict=True)), "groups": group_stats(con), "filing_churn": churn(con),
             "selection_year": y3, "selection_year_snapshot": provenance.snapshot_for(con, y3)}
 
 
@@ -435,10 +468,15 @@ def sst_exposure(
         nstatus, npos = "filing_found", f"A CY {y3} Form 300A filing is in this data{snap_txt}."
     elif s["no_filing_found_selection_year"]:
         nstatus = "no_filing_found"
+        ch = churn(con)
+        earlier = [v for y, v in ch.items() if y < y3]
+        bg = (f" For scale: in earlier years, {100 * min(earlier):.0f}% to {100 * max(earlier):.0f}% of "
+              "establishments that filed one year were not found under the same name and address the next."
+              if earlier else "")
         npos = (f"No CY {y3} filing was found{snap_txt}, and the CY {y2} filing reported "
                 f"{s[f'employees_{y2}']:,.0f} employees. This is not a finding that a required filing was "
                 "missed: the establishment may have filed after the snapshot, under a different name or "
-                "address, closed, or fallen outside the filing requirement.")
+                "address, closed, or fallen outside the filing requirement." + bg)
     else:
         nstatus = "not_evaluable"
         npos = (f"No CY {y3} filing was found{snap_txt}, and there is no CY {y2} filing with 20 or more "
