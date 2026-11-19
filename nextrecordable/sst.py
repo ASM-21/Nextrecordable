@@ -396,7 +396,8 @@ def sst_exposure(
     in_scope = not reasons
     report["in_scope"] = in_scope
     report["scope_note"] = (
-        d["scope"]["summary"] if in_scope else " ".join(reasons)
+        f"In scope for comparison. The program covers: {d['scope']['summary'][0].lower()}{d['scope']['summary'][1:]}"
+        if in_scope else " ".join(reasons)
     )
     report["sst_group"] = grp
     report["sst_group_label"] = GROUP_LABELS[grp]

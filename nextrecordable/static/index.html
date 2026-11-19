@@ -106,6 +106,19 @@
   .cands button { font: inherit; background: none; border: 0; border-bottom: 1px solid var(--rule); color: var(--ink); cursor: pointer; text-align: left; width: 100%; padding: 0.5rem 0; }
   .cands button:hover, .cands button:focus-visible { background: var(--step); outline: none; }
 
+  .datanotice { border: 1.5px solid #8a1f11; color: #8a1f11; padding: 0.7rem 0.9rem; margin: 0 0 1.5rem; font-weight: 600; background: var(--field); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .datanotice { color: #ff9b8a; border-color: #ff9b8a; } }
+  .statement { border: 1.5px solid var(--ink); padding: 0.7rem 0.9rem; font-weight: 650; margin: 0 0 1rem; }
+  .crit { border-top: 1px solid var(--rule); padding: 0.75rem 0; }
+  .crit h3 { font-size: 0.98rem; margin: 0 0 0.25rem; display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline; }
+  .chip { font-size: 0.75rem; font-weight: 600; border: 1px solid var(--ink); padding: 0.05rem 0.45rem; white-space: nowrap; }
+  .chip.hot { background: var(--mark); color: var(--mark-ink); }
+  .quote { color: var(--muted); font-size: 0.85rem; font-style: italic; margin: 0.35rem 0 0; }
+  .note { color: var(--muted); font-size: 0.9rem; }
+  .pdf { display: flex; gap: 0; margin: 1rem 0 0; border: 1.5px solid var(--ink); background: var(--field); max-width: 34rem; }
+  .pdf input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--ink); font: inherit; padding: 0.55rem 0.6rem; }
+  .pdf button { border: 0; background: var(--ink); color: var(--paper); font: inherit; font-weight: 650; padding: 0.55rem 0.9rem; cursor: pointer; }
+
   footer { margin-top: 3.5rem; color: var(--muted); font-size: 0.85rem; }
   footer a { color: var(--ink); }
 
@@ -121,7 +134,7 @@
 <body>
 <main>
   <h1 class="wide">nextrecordable</h1>
-  <p class="lede">Look up an employer that files OSHA injury logs and see its expected injury rate for next year, measured against its industry.</p>
+  <p class="lede">Look up an employer that files OSHA injury logs: its expected injury rate for next year against its industry, and where it sits against OSHA's Site-Specific Targeting criteria.</p>
 
   <form id="lookup" autocomplete="off">
     <div class="box"><label for="name">Establishment or company name</label><input id="name" name="name" required maxlength="300" placeholder="Acme Forge Inc"></div>
@@ -134,7 +147,7 @@
   <section id="out" aria-live="polite"></section>
 
   <footer>
-    <p>Scoring a whole book of business? Upload a CSV with name, state and ZIP columns through the batch endpoint in the <a href="/docs">API docs</a>.</p>
+    <p>Plans and API keys: <a href="/pricing">pricing</a>. Scoring a whole book of business? Upload a CSV with name, state and ZIP columns through the batch endpoint in the <a href="/docs">API docs</a>.</p>
     <p>An independent project built on public OSHA injury logs and Department of Labor enforcement records. Not affiliated with OSHA or the Department of Labor.</p>
   </footer>
 </main>
@@ -152,7 +165,7 @@ async function lookup(payload) {
   try {
     const r = await fetch("/score", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
     const body = await r.json();
-    if (r.ok) renderReport(body);
+    if (r.ok) { renderReport(body); loadSst(payload); }
     else if (r.status === 404) renderNoMatch(body.detail, payload);
     else if (r.status === 422) renderNotice("Fill in the company name, a two-letter state and a ZIP code.");
     else renderNotice(`The lookup failed (${r.status}). Try again in a moment.`);
@@ -205,7 +218,11 @@ function renderReport(r) {
   }).join("");
   const rows = (r.history || []).slice().reverse().map((h) =>
     `<tr><td>${h.year}</td><td>${num(h.employees, 0)}</td><td>${num(h.n_recordable, 0)}</td><td>${num(h.tcr)}</td><td>${num(h.naics4_tcr_median)}</td></tr>`).join("");
+  const driversBlock = (r.risk_drivers && r.risk_drivers.length)
+    ? `<h2>What moves the estimate off its starting point</h2><ul class="drivers">${drivers}</ul>`
+    : (r.drivers_note ? `<p class="note">${esc(r.drivers_note)}</p>` : "");
   out.innerHTML = `
+    ${r.data_notice ? `<p class="datanotice">${esc(r.data_notice)}</p>` : ""}
     <p class="who wide">${esc(r.establishment_name)}</p>
     <p class="where">${esc(r.street_address || "")}${r.street_address ? ", " : ""}${esc(r.city || "")} ${esc(r.state)} ${esc(r.zip5)}. NAICS ${esc(r.naics_code || "n/a")}. Latest filing ${r.latest_year}.</p>
     <div class="forecast"><span class="rate wide">${num(r.expected_tcr_next)}</span>
@@ -223,12 +240,70 @@ function renderReport(r) {
       <li><span>OSHA inspections, last two years</span><span>${enf}</span></li>
       <li><span>Confidence</span><span>${esc(r.confidence.charAt(0).toUpperCase() + r.confidence.slice(1))}, ${esc(r.confidence_note)}</span></li>
     </ul>
-    <h2>What moves the estimate off its starting point</h2>
-    <ul class="drivers">${drivers}</ul>
+    ${driversBlock}
     <h2>Filed with OSHA</h2>
     <div class="table-wrap"><table><thead><tr><th>Year</th><th>Employees</th><th>Recordable cases</th><th>Case rate</th><th>Industry median</th></tr></thead><tbody>${rows}</tbody></table></div>
     <h2>Read before relying on this</h2>
-    <ul class="caveats">${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
+    <ul class="caveats">${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+    <section id="sst" aria-live="polite"><h2>OSHA Site-Specific Targeting</h2><p class="note">Loading position against CPL 02-01-067.</p></section>`;
+}
+
+const STATUS = {
+  no_published_cutoff: ["position only, OSHA publishes no cutoff", false],
+  meets_both_conditions_as_read: ["meets both conditions as we read them", true],
+  meets_rate_condition_only: ["meets the rate condition only", false],
+  meets_trend_condition_only: ["meets the trend condition only", false],
+  meets_neither_condition: ["meets neither condition", false],
+  not_evaluable: ["not evaluable", false],
+  filing_found: ["CY 2023 filing found", false],
+  no_filing_found: ["no CY 2023 filing found", true],
+};
+
+async function loadSst(payload) {
+  const box = () => document.getElementById("sst");
+  try {
+    const r = await fetch("/sst-exposure", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+    const body = await r.json();
+    if (!box()) return;
+    if (!r.ok) { box().innerHTML = `<h2>OSHA Site-Specific Targeting</h2><p class="note">${esc((body.detail && (body.detail.message || body.detail)) || "Not available.")}</p>`; return; }
+    renderSst(body, payload);
+  } catch (e) {
+    if (box()) box().innerHTML = `<h2>OSHA Site-Specific Targeting</h2><p class="note">Couldn't load the SST position.</p>`;
+  }
+}
+
+function renderSst(s, payload) {
+  const d = s.directive || {};
+  const years = Object.entries(s.sst_years || {}).map(([y, v]) =>
+    `<tr><td>${y}</td><td>${v.filed ? "yes" : "no"}</td><td>${num(v.dart_rate, 2)}</td></tr>`).join("");
+  const g = s.peers && s.peers.group, i = s.peers && s.peers.industry;
+  const peers = g ? `<p>${pct(g.share_with_lower_rate)} of ${num(g.n, 0)} compared ${esc(g.label)} establishments reported a lower CY ${s.peers.year} DART rate; within ${esc(i.label)}, ${pct(i.share_with_lower_rate)} of ${num(i.n, 0)}.</p>` : "";
+  const crits = (s.criteria || []).map((c) => {
+    const [label, hot] = STATUS[c.status] || [c.status, false];
+    return `<div class="crit"><h3>${esc(c.label)} <span class="chip${hot ? " hot" : ""}">${esc(label)}</span></h3>
+      <div>${esc(c.position)}</div><p class="quote">Directive: "${esc(c.quote)}"</p></div>`;
+  }).join("");
+  document.getElementById("sst").innerHTML = `
+    <h2>OSHA Site-Specific Targeting</h2>
+    <p class="statement">${esc(s.statement)}</p>
+    <p class="note">Measured against ${esc(d.directive)} (${esc(d.title)}), effective ${esc(d.effective_date)}, which selects on Form 300A data for ${esc((d.data_years || []).join(", "))}. ${esc(s.scope_note || "")}</p>
+    ${years ? `<div class="table-wrap"><table><thead><tr><th>Year</th><th>Filed</th><th>DART rate</th></tr></thead><tbody>${years}</tbody></table></div>` : ""}
+    ${peers}
+    ${crits}
+    <form class="pdf" id="pdfform"><input id="apikey" type="password" placeholder="API key for the PDF (Pro and Team)" autocomplete="off" aria-label="API key"><button type="submit">Download PDF</button></form>
+    <p class="note" id="pdfmsg">The PDF needs an API key on a paid plan. <a href="/pricing">See plans</a>.</p>`;
+  document.getElementById("pdfform").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const msg = document.getElementById("pdfmsg");
+    const key = document.getElementById("apikey").value.trim();
+    msg.textContent = "Preparing PDF";
+    const r = await fetch("/sst-exposure-pdf", {method: "POST", headers: {"Content-Type": "application/json", "X-API-Key": key}, body: JSON.stringify(payload)});
+    if (!r.ok) { const b = await r.json().catch(() => ({})); msg.textContent = (b.detail && (b.detail.message || b.detail)) || `Failed (${r.status}).`; return; }
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a"); a.href = url; a.download = "sst-exposure.pdf"; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    msg.textContent = "Downloaded.";
+  });
 }
 </script>
 </body>

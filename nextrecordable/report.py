@@ -212,7 +212,14 @@ def risk_report(
         # Older clients read these two names.
         "risk_score_next_year": scores["p_any_next"],
         "industry_percentile": scores["peer_pctile"],
-        "risk_drivers": _drivers(result, latest),
+        # Drivers explain the served rate. When the experience-rated estimate is
+        # served there is nothing to explain beyond the formula, and the binary
+        # model's log-odds must not be shown as if they moved the rate.
+        "risk_drivers": _drivers(result, latest) if result.rate_served == "model" and result.rate is not None else [],
+        "rate_served": result.rate_served,
+        "drivers_note": (None if result.rate_served == "model" else
+                         "The boosted rate model did not beat the experience-rated estimate on the holdout "
+                         "year, so the estimate shown is the experience-rated one and has no model drivers."),
         "enforcement": enforcement,
         "confidence": level,
         "confidence_note": note,
