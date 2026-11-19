@@ -136,13 +136,15 @@ def test_pdf_and_batch_need_a_key_on_the_right_tier(gated):
     _, pro_key = store.create("p@example.com", "pro")
     r = client.post("/sst-exposure-pdf", json=body, headers={"X-API-Key": pro_key})
     assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    assert client.post("/score-pdf", json=body, headers={"X-API-Key": free_key}).status_code == 403
+    assert client.post("/score-pdf", json=body, headers={"X-API-Key": pro_key}).status_code == 200
     csv_body = f"name,state,zip\n{body['name']},{body['state']},{body['zip_code']}\n"
     files = {"file": ("b.csv", csv_body, "text/csv")}
     assert client.post("/score-batch", files=files).status_code == 401
     assert client.post("/score-batch", files=files, headers={"X-API-Key": free_key}).status_code == 403
     assert client.post("/score-batch", files=files, headers={"X-API-Key": pro_key}).status_code == 200
     usage = client.get("/account", headers={"X-API-Key": pro_key}).json()
-    assert usage["lookups_this_month"] == 2 and usage["tier"] == "pro"
+    assert usage["lookups_this_month"] == 3 and usage["tier"] == "pro"
     assert client.post("/score", json=body, headers={"X-API-Key": "nr_wrong"}).status_code == 401
 
 

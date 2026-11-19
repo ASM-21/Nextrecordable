@@ -120,6 +120,9 @@ curl -X POST localhost:8000/score -H "Content-Type: application/json" \
 
 curl -X POST localhost:8000/score-batch -H "X-API-Key: $KEY" -F "file=@book_of_business.csv"
 
+curl -X POST localhost:8000/score-pdf -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"name": "Acme Forge Inc", "state": "IL", "zip_code": "61602"}' -o injury-risk.pdf
+
 curl -X POST localhost:8000/sst-exposure-pdf -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"name": "Acme Forge Inc", "state": "IL", "zip_code": "61602"}' -o sst-exposure.pdf
 ```
@@ -128,7 +131,7 @@ Batch CSVs need name, state and ZIP columns; common headers (`company`, `zip`, `
 
 ### Keys, tiers and pricing
 
-| tier | price | lookups a month | batch rows per upload | SST exposure PDF |
+| tier | price | lookups a month | batch rows per upload | PDF reports |
 |---|---|---|---|---|
 | Free | $0 | 100 | none | on screen only |
 | Pro | $79/mo | 2,000 | 1,000 | yes |

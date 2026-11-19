@@ -5,6 +5,7 @@ Endpoints
   GET  /health        liveness + model summary
   POST /score         one establishment by name + state + ZIP (+ street)
   POST /score-batch   CSV upload (a broker's book), ranked by expected case rate
+  POST /score-pdf         the /score report as a PDF (broker leave-behind)
   POST /sst-exposure      position against OSHA's Site-Specific Targeting criteria (JSON)
   POST /sst-exposure-pdf  the same report as a PDF
   POST /sst-batch         CSV upload of many establishments -> SST positions (JSON, or CSV with ?format=csv)
@@ -58,6 +59,7 @@ from .match import build_directory, match_rows, suggestions
 from .models.baseline import TrainResult, load_model
 from .normalize import state_code, zip5
 from .report import _clean, _table_exists, ensure_scores, risk_report, score_keys
+from .report import render_pdf as render_risk_pdf
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_BATCH_ROWS = 5_000
@@ -183,7 +185,7 @@ def create_app(
         if need == "batch uploads" and units > (limits.get("batch_rows") or 0):
             raise HTTPException(status_code=403, detail=(
                 f"The {limits['name']} tier allows batch uploads of up to {limits.get('batch_rows') or 0:,} rows."))
-        if need == "SST exposure PDFs" and not limits.get("sst_pdf"):
+        if need == "PDF reports" and not limits.get("pdf_reports"):
             raise HTTPException(status_code=403, detail=f"The {limits['name']} tier does not include PDFs.")
         try:
             accounts.meter(account, units)
@@ -254,6 +256,19 @@ def create_app(
             return [clean_tree(v) for v in value]
         return _clean(value)
 
+    @app.post("/score-pdf")
+    def score_pdf(req: ScoreRequest, request: Request, x_api_key: str | None = Header(None)) -> Response:
+        authorize(request, x_api_key, need="PDF reports")
+        cur = cursor()
+        try:
+            m = resolve(cur, req)
+            report = risk_report(cur, m["estab_key"], model, panel_table=panel, scores_table=scores_table)
+        finally:
+            cur.close()
+        report["data_notice"] = data_notice
+        return Response(content=render_risk_pdf(report), media_type="application/pdf",
+                        headers={"Content-Disposition": 'attachment; filename="injury-risk.pdf"'})
+
     @app.post("/sst-exposure")
     def sst_exposure(req: ScoreRequest, request: Request,
                      x_api_key: str | None = Header(None)) -> dict[str, Any]:
@@ -271,7 +286,7 @@ def create_app(
     @app.post("/sst-exposure-pdf")
     def sst_exposure_pdf(req: ScoreRequest, request: Request,
                          x_api_key: str | None = Header(None)) -> Response:
-        authorize(request, x_api_key, need="SST exposure PDFs")
+        authorize(request, x_api_key, need="PDF reports")
         cur = cursor()
         try:
             m = resolve(cur, req)
@@ -416,7 +431,7 @@ def create_app(
             raise HTTPException(status_code=401, detail="Unknown or inactive API key.")
         return {"tier": acct.tier, "key_prefix": acct.key_prefix, "lookups_this_month": accounts.usage(acct.id),
                 "monthly_lookups": acct.limits.get("monthly_lookups"), "batch_rows": acct.limits.get("batch_rows"),
-                "sst_pdf": acct.limits.get("sst_pdf")}
+                "pdf_reports": acct.limits.get("pdf_reports")}
 
     recover_lock = threading.Lock()
     recover_counts: dict[tuple[str, str], int] = defaultdict(int)
@@ -478,7 +493,7 @@ def render_pricing(env: dict[str, str]) -> str:
                  "Contact us" if t["price_usd_month"] is None else f"${t['price_usd_month']:,}/mo")
         quota = ("Custom volume" if t["monthly_lookups"] is None else f"{t['monthly_lookups']:,} lookups a month")
         batch = f"Batch uploads up to {t['batch_rows']:,} rows" if t["batch_rows"] else "No batch uploads"
-        pdf = "SST exposure PDFs" if t["sst_pdf"] else "SST position on screen only"
+        pdf = "PDF reports: injury risk and SST exposure" if t["pdf_reports"] else "Reports on screen only"
         link = env.get(PAYMENT_LINK_ENV.format(t["id"].upper()))
         if t["id"] == "free":
             cta = '<a class="btn" href="/">Look up an establishment</a>'
