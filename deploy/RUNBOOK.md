@@ -44,7 +44,7 @@ git pull && cd deploy && docker compose up -d --build
 
 **Watch for a new SST directive.** CPL 02-01-067 runs two years from May 20, 2025 unless replaced. When OSHA issues a successor, add a new data file beside `nextrecordable/data/sst_cpl_02_01_067.json` with its quotes, data years and source, and point `sst.DIRECTIVE_FILE` at it. Until then every report prints the directive's dates, so a stale report is visibly stale.
 
-**Reissue a lost or leaked key.** On the host:
+**Reissue a lost or leaked key.** Customers can do this themselves: `POST /account/recover` with their email sends a one-hour, single-use link; opening it replaces the key and emails the new one. If that fails (old email address, mail bouncing), on the host:
 
 ```bash
 docker compose exec app python -c "from nextrecordable.accounts import AccountStore; s=AccountStore('/app/data/accounts.sqlite'); print(s._db.execute('select id,email,tier,key_prefix,active from accounts').fetchall())"

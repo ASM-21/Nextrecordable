@@ -17,13 +17,14 @@ import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 TIERS_FILE = Path(__file__).parent / "data" / "tiers.json"
 KEY_PREFIX = "nr_"
+RECOVERY_TTL = timedelta(hours=1)
 
 
 @lru_cache(maxsize=1)
@@ -78,6 +79,9 @@ class AccountStore:
                     account_id INTEGER NOT NULL, period TEXT NOT NULL, lookups INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (account_id, period));
                 CREATE TABLE IF NOT EXISTS stripe_events (id TEXT PRIMARY KEY, type TEXT, received_at TEXT);
+                CREATE TABLE IF NOT EXISTS recovery_tokens (
+                    token_hash TEXT PRIMARY KEY, account_id INTEGER NOT NULL, expires_at TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0);
                 """
             )
 
@@ -157,3 +161,35 @@ class AccountStore:
                 return False
             except sqlite3.IntegrityError:
                 return True
+
+    # ---------------------------------------------------------- recovery
+
+    def start_recovery(self, email: str, now: datetime | None = None) -> list[tuple[Account, str]]:
+        """One-time tokens for every active account with this email (empty list if none)."""
+        now = now or datetime.now(UTC)
+        with self._lock:
+            ids = [r[0] for r in self._db.execute(
+                "SELECT id FROM accounts WHERE email = ? AND active = 1", (email.strip().lower(),)).fetchall()]
+        out = []
+        for acct_id in ids:
+            token = secrets.token_urlsafe(32)
+            with self._lock:
+                self._db.execute("INSERT INTO recovery_tokens VALUES (?, ?, ?, 0)",
+                                 (hash_key(token), acct_id, (now + RECOVERY_TTL).isoformat()))
+            out.append((self.get(acct_id), token))
+        return out
+
+    def finish_recovery(self, token: str, now: datetime | None = None) -> tuple[Account, str] | None:
+        """Rotate the account's key if the token is valid, unused and unexpired. Returns (account, new key)."""
+        now = now or datetime.now(UTC)
+        with self._lock:
+            r = self._db.execute(
+                "SELECT account_id, expires_at, used FROM recovery_tokens WHERE token_hash = ?",
+                (hash_key(token or ""),)).fetchone()
+            if r is None or r[2] or datetime.fromisoformat(r[1]) < now:
+                return None
+            key = KEY_PREFIX + secrets.token_urlsafe(32)
+            self._db.execute("UPDATE recovery_tokens SET used = 1 WHERE token_hash = ?", (hash_key(token),))
+            self._db.execute("UPDATE accounts SET key_hash = ?, key_prefix = ? WHERE id = ?",
+                             (hash_key(key), key[: len(KEY_PREFIX) + 8], r[0]))
+        return self.get(r[0]), key

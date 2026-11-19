@@ -1,0 +1,340 @@
+{
+  "what": "precision of fuzzy DOL inspection to ITA establishment links",
+  "population": "inspections opened 2019-2023 with link_method = 'fuzzy'",
+  "sampling": "first 80 by hash(activity_nr || 'audit-2026-11') in DuckDB; reproducible from the same database",
+  "labeled_by": "Claude, reviewing name, street, city and ZIP side by side on 2026-11-19; not a second human reviewer",
+  "rule": "same establishment if both names refer to the same organization at the same site (same or adjacent street number)",
+  "n": 80,
+  "same_establishment": 80,
+  "precision": 1.0,
+  "precision_lower_bound_one_sided_95": 0.9632458022200177,
+  "closest_calls": {
+    "344190806": "552 vs 553 Route 3A, Bow vs Concord NH (adjacent towns, same company): judged same",
+    "344814561": "ITA name 'Consumers DE' at the same address as Consumers Energy: judged same",
+    "345031652": "city misspelled on the DOL record, same street and ZIP: judged same",
+    "343744025": "same name and street, ZIP 10460 vs 10474: judged same"
+  },
+  "labels": [
+    {
+      "activity_nr": "343699336",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "343744025",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "343826160",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344028600",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344136288",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344169545",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344190806",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344202056",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344234547",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344299508",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344397286",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344613831",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344656376",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344680863",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344683081",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344792015",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344814561",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344928437",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "344970785",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345030597",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345031652",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345062483",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345067581",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345070064",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345093801",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345158778",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345250088",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345350920",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345410930",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345412852",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345436869",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345459101",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345460406",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345469340",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345476980",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345478077",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345552285",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345556195",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345611677",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345646954",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345759146",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345774863",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345804884",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345820237",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345832646",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345843064",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345858310",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345882237",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345923304",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345934525",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345935936",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "345953970",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346058761",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346086739",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346197254",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346208150",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346240351",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346240369",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346320922",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346350135",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346352404",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346383680",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346425499",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346452774",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346497217",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346535321",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346623531",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346626484",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346730542",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346804487",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346840069",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346864762",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346885312",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346905813",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346907090",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346939622",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "346992001",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "347018400",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "347043267",
+      "same_establishment": true
+    },
+    {
+      "activity_nr": "347163636",
+      "same_establishment": true
+    }
+  ],
+  "not_measured": "recall: how many unlinked or ambiguous inspections belong to an ITA filer"
+}

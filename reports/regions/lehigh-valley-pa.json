@@ -1,0 +1,48 @@
+{
+  "region": "Lehigh Valley, PA",
+  "definition": {
+    "state": "PA",
+    "zip3": [
+      "180",
+      "181"
+    ],
+    "naics2": [
+      "31",
+      "32",
+      "33"
+    ]
+  },
+  "as_of": "2026-11-19",
+  "directive": "CPL 02-01-067",
+  "statement": "This report describes position against published criteria and never predicts whether OSHA will inspect.",
+  "data_notice": "DATA NOTICE: some input files are third-party copies of OSHA's published files, not downloads from osha.gov. See the data provenance table.",
+  "selection_year_snapshot": "through 2024-03-16",
+  "establishments_filing": {
+    "2021": 189,
+    "2022": 204,
+    "2023": 199
+  },
+  "establishments_in_any_sst_year": 295,
+  "in_comparison": 187,
+  "median_dart_2023_in_comparison": 1.1565941771266153,
+  "national_group_median_dart_2023": {
+    "manufacturing": 1.1564303308547177,
+    "non_manufacturing": 1.5284677111196026
+  },
+  "at_or_above_group_p75": 46,
+  "at_or_above_group_p90": 20,
+  "upward_trending": {
+    "meets_both_conditions_as_read": 6,
+    "meets_rate_condition_only": 32,
+    "meets_trend_condition_only": 7,
+    "meets_neither_condition": 70,
+    "not_evaluable": 180
+  },
+  "selection_year_filing": {
+    "filing_found": 204,
+    "no_filing_found": 49,
+    "not_evaluable": 42
+  },
+  "comprehensive_inspection_within_36_months": 0,
+  "suppression": "counts from 1 to 4 are shown as <5"
+}

@@ -45,3 +45,12 @@ Judgment calls made while taking nextrecordable to real data (November 2026), ne
 
 22. One DuckDB segmentation fault during a build that reused inspection links. Every step succeeded run alone, and the full build succeeded on retry. Not reproduced; noted in case it recurs.
 23. Commits carry Andrew's noreply identity. No secrets, keys, customer emails or local paths are in the repo; `deploy/env.example` holds placeholders only.
+
+## After the first merge
+
+24. **The credibility constant stays at 200,000 hours.** Fitting it on the validation year picks about 100,000 hours, which does worse on the holdout year; holdout deviance is flat between roughly 150,000 and 300,000. A hand-set value that sits on a flat optimum beats a fitted one that chases one year.
+25. **Drivers only for a served boosted model.** With the experience-rated estimate served, `/score` shows no drivers and says why, instead of showing binary-model log-odds under a rate heading.
+26. **Batch SST and region summaries for extension centers.** `/sst-batch` reuses the single-report logic (a test checks they agree). `region-summary` publishes counts only and suppresses counts from 1 to 4, so a regional table cannot point at one plant.
+27. **Link precision was labeled by Claude**, not a second person: 80 of 80 sampled fuzzy links were the same establishment. A human spot-check of the closest calls in `reports/link_audit.json` would make it stronger.
+28. **Key recovery by emailed link**, never by showing a key in the browser. The request answers the same way for unknown addresses, is capped at five a day per client, and the link is single use and expires in an hour. Usage stays with the account.
+29. **Container check in CI.** No Docker daemon was available while writing the Dockerfile, so CI builds the image and starts it on a synthetic database on every push.

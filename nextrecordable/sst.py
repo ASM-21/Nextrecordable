@@ -396,7 +396,8 @@ def sst_exposure(
     in_scope = not reasons
     report["in_scope"] = in_scope
     report["scope_note"] = (
-        d["scope"]["summary"] if in_scope else " ".join(reasons)
+        f"In scope for comparison. The program covers: {d['scope']['summary'][0].lower()}{d['scope']['summary'][1:]}"
+        if in_scope else " ".join(reasons)
     )
     report["sst_group"] = grp
     report["sst_group_label"] = GROUP_LABELS[grp]
@@ -637,3 +638,69 @@ def render_pdf(report: dict[str, Any], *, compress: bool = True) -> bytes:
                       pageCompression=1 if compress else 0).build(
         story, onFirstPage=footer, onLaterPages=footer)
     return buf.getvalue()
+
+
+# ------------------------------------------------------------------- batch
+
+BATCH_COLUMNS: tuple[str, ...] = (
+    "estab_key", "establishment_name", "city", "state", "zip5", "naics_code", "sst_group", "in_comparison",
+    "dart_2021", "dart_2022", "dart_2023", "share_lower_in_group", "group_n", "industry_group",
+    "share_lower_in_industry", "upward_trending_status", "selection_year_filing", "last_comprehensive_inspection",
+)
+
+
+def sst_batch(con: duckdb.DuckDBPyConnection, keys: list[str], *, panel_table: str = "ita_panel",
+              table: str = "sst_position") -> list[dict[str, Any]]:
+    """Compact SST positions for many establishments, one row per key (same logic as sst_exposure)."""
+    import pandas as pd
+
+    y1, y2, y3 = load_directive()["data_years"]
+    keys = list(dict.fromkeys(k for k in keys if k and _KEY_RE.fullmatch(k)))
+    if not keys:
+        return []
+    if not _exists(con, table):
+        build_sst_table(con, panel_table=panel_table, output=table)
+    insp = ("""LEFT JOIN (SELECT l.estab_key, max(substr(i.open_date, 1, 10)) AS last_comp
+                         FROM inspection_linked l JOIN osha_inspection i USING (activity_nr)
+                         WHERE upper(left(coalesce(i.insp_scope, ''), 1)) = 'A'
+                           AND l.estab_key IN (SELECT estab_key FROM _sst_keys)
+                         GROUP BY 1) c USING (estab_key)"""
+            if _exists(con, "inspection_linked") and _exists(con, "osha_inspection") else "")
+    last_comp = "c.last_comp" if insp else "CAST(NULL AS VARCHAR)"
+    con.register("_sst_keys", pd.DataFrame({"estab_key": pd.Series(keys, dtype="object")}))
+    try:
+        rows = con.execute(
+            f"""
+            WITH latest AS (
+                SELECT estab_key, establishment_name, city, state, zip5, naics_code
+                FROM {panel_table} WHERE estab_key IN (SELECT estab_key FROM _sst_keys)
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY estab_key ORDER BY year DESC) = 1
+            )
+            SELECT p.estab_key, p.establishment_name, p.city, p.state, p.zip5, p.naics_code,
+                   coalesce(s.sst_group, 'no_filing_in_sst_years'), coalesce(s.in_comparison, false),
+                   s.dart_{y1}, s.dart_{y2}, s.dart_{y3}, s.group_share_below, s.group_n, s.industry_group,
+                   s.industry_share_below,
+                   CASE WHEN s.estab_key IS NULL OR s.dart_{y1} IS NULL OR s.dart_{y2} IS NULL OR s.dart_{y3} IS NULL
+                             THEN 'not_evaluable'
+                        WHEN s.upward_rate_condition AND s.upward_trend_condition THEN 'meets_both_conditions_as_read'
+                        WHEN s.upward_rate_condition THEN 'meets_rate_condition_only'
+                        WHEN s.upward_trend_condition THEN 'meets_trend_condition_only'
+                        ELSE 'meets_neither_condition' END,
+                   CASE WHEN s.filed_{y3} THEN 'filing_found'
+                        WHEN s.no_filing_found_selection_year THEN 'no_filing_found'
+                        ELSE 'not_evaluable' END,
+                   {last_comp}
+            FROM latest p
+            LEFT JOIN {table} s USING (estab_key)
+            {insp}
+            """
+        ).fetchall()
+    finally:
+        con.unregister("_sst_keys")
+    out = []
+    for r in rows:
+        rec = dict(zip(BATCH_COLUMNS, r, strict=True))
+        rec["in_comparison"] = bool(rec["in_comparison"])
+        out.append(rec)
+    order = {k: i for i, k in enumerate(keys)}
+    return sorted(out, key=lambda x: order[x["estab_key"]])

@@ -130,3 +130,29 @@ def test_batch_rejections(client, monkeypatch):
     assert client.post("/score-batch", files=_csv(rows)).status_code == 413
     monkeypatch.setattr(api_module, "MAX_UPLOAD_BYTES", 50)
     assert client.post("/score-batch", files=_csv(["name,state,zip_code"] + ["Acme Widgets,IL,60601"] * 5)).status_code == 413
+
+
+def test_no_drivers_when_the_credibility_rate_is_served(world):
+    """Binary log-odds once appeared under 'what moves the rate estimate' when no rate model was served."""
+    from dataclasses import replace
+
+    from nextrecordable.report import risk_report
+
+    con, result = world["con"], world["result"]
+    key = con.execute("SELECT estab_key FROM ita_panel ORDER BY estab_key LIMIT 1").fetchone()[0]
+    plain = risk_report(con, key, replace(result, rate_served="credibility"))
+    assert plain["risk_drivers"] == [] and plain["rate_served"] == "credibility" and plain["drivers_note"]
+    boosted = risk_report(con, key, replace(result, rate_served="model"))
+    assert boosted["risk_drivers"] and all(d["space"] == "log_rate" for d in boosted["risk_drivers"])
+
+
+def test_lookup_page_wires_sst_and_data_notice():
+    from pathlib import Path
+
+    import nextrecordable
+
+    page = (Path(nextrecordable.__file__).parent / "static" / "index.html").read_text()
+    for needle in ('fetch("/sst-exposure"', "/sst-exposure-pdf", "r.data_notice", "s.statement", "drivers_note",
+                   'href="/pricing"', '"X-API-Key"'):
+        assert needle in page, needle
+    assert "innerHTML" in page and "esc(" in page          # server text is escaped before it is inserted
