@@ -37,6 +37,8 @@ For one establishment (lookup page at `/` or `POST /score`) or a whole book of b
 - whether a CY 2023 filing was found, with the year-over-year churn that makes a missing filing ambiguous;
 - inspections on record and the 36-month deletion rule.
 
+`POST /sst-batch` takes a CSV of establishments (an extension center's client plants, a broker's book) and returns one row of SST position per establishment, as JSON or, with `?format=csv`, as a spreadsheet whose first line is the statement below. It counts each row against the plan's batch limit.
+
 Every report carries this sentence: **This report describes position against published criteria and never predicts whether OSHA will inspect.** OSHA does not publish the DART cutoffs it uses, three of the four lists are random samples, and only OSHA and State Plans see the lists, so the report gives percentile position and states no cutoff. The directive's dates, quotes and source are in `nextrecordable/data/sst_cpl_02_01_067.json`; no successor directive had been announced as of November 16, 2026. No Form 300/301 case data, and so no narrative about any worker, can reach the report.
 
 ## Results on real data

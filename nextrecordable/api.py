@@ -7,6 +7,7 @@ Endpoints
   POST /score-batch   CSV upload (a broker's book), ranked by expected case rate
   POST /sst-exposure      position against OSHA's Site-Specific Targeting criteria (JSON)
   POST /sst-exposure-pdf  the same report as a PDF
+  POST /sst-batch         CSV upload of many establishments -> SST positions (JSON, or CSV with ?format=csv)
 
 Accounts (when the app is built with an AccountStore, as in production):
   GET  /pricing           tiers from data/tiers.json, Stripe Payment Links from env
@@ -340,6 +341,58 @@ def create_app(
                 "ranked_by": "expected_tcr_next (size-adjusted expected case rate), then p_any_next",
                 "data_notice": data_notice,
             },
+            "results": results,
+            "unmatched": unmatched,
+        }
+
+    @app.post("/sst-batch")
+    def sst_batch(request: Request, file: UploadFile = File(...), format: str = "json",
+                  x_api_key: str | None = Header(None)) -> Any:
+        """SST positions for a client list (an extension center's plants, a broker's book)."""
+        if not file.filename or not file.filename.lower().endswith(".csv"):
+            raise HTTPException(status_code=400, detail="File must be a .csv")
+        data = file.file.read(MAX_UPLOAD_BYTES + 1)
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"File too large: the limit is {MAX_UPLOAD_BYTES // 1_048_576} MB.")
+        rows = parse_upload(data)
+        if not rows:
+            raise HTTPException(status_code=400, detail="CSV has no data rows.")
+        authorize(request, x_api_key, units=len(rows), need="batch uploads")
+        cur = cursor()
+        try:
+            matches = match_rows(cur, rows, directory=directory)
+            matched = matches[matches["status"] == "matched"]
+            positions = {p["estab_key"]: p for p in sst.sst_batch(cur, matched["estab_key"].tolist(), panel_table=panel)}
+        finally:
+            cur.close()
+        results = []
+        for m in matched.to_dict("records"):
+            pos = positions.get(m["estab_key"])
+            if pos is not None:
+                results.append({"input_row": int(m["rec_id"]), "input_name": m["original_name"],
+                                "match_probability": _clean(m["match_probability"]),
+                                **{k: _clean(v) for k, v in pos.items()}})
+        unmatched = [{"input_row": int(m["rec_id"]), "input_name": m["original_name"], "reason": m["status"]}
+                     for m in matches[matches["status"] != "matched"].to_dict("records")]
+        if format == "csv":
+            buf = io.StringIO()
+            buf.write(f"# {sst.STATEMENT}\n")
+            if data_notice:
+                buf.write(f"# {data_notice}\n")
+            cols = ["input_row", "input_name", "match_probability", *sst.BATCH_COLUMNS]
+            w = csv.DictWriter(buf, fieldnames=[*cols, "match_status"], extrasaction="ignore")
+            w.writeheader()
+            for r in results:
+                w.writerow({**r, "match_status": "matched"})
+            for u in unmatched:
+                w.writerow({"input_row": u["input_row"], "input_name": u["input_name"], "match_status": u["reason"]})
+            return Response(content=buf.getvalue(), media_type="text/csv",
+                            headers={"Content-Disposition": 'attachment; filename="sst-positions.csv"'})
+        return {
+            "statement": sst.STATEMENT,
+            "data_notice": data_notice,
+            "directive": sst.load_directive()["directive"],
+            "summary": {"n_input_rows": len(rows), "n_matched": len(results), "n_unmatched": len(unmatched)},
             "results": results,
             "unmatched": unmatched,
         }

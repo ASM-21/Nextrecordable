@@ -258,3 +258,36 @@ def test_undeclared_database_is_never_silently_real():
     assert provenance.notice(con).startswith("UNDECLARED DATA")
     provenance.declare(con, "official")
     assert provenance.notice(con) is None
+
+
+def test_batch_positions_agree_with_single_reports(sst_con):
+    names = ["Rising Forge", "Slow Riser", "High Flat", "Falling Works", "Gone Quiet Inc", "Tiny Shop",
+             "Build Co", "County Garage", "Newcomer LLC", "Bad Hours Ltd", "Peer Plant 7"]
+    keys = [python_key(n, "IL", "61602") for n in names]
+    batch = {r["estab_key"]: r for r in sst.sst_batch(sst_con, [*keys, "bogus"])}
+    assert list(batch) == keys
+    for k in keys:
+        single = sst.sst_exposure(sst_con, k)
+        crit = {c["id"]: c["status"] for c in single["criteria"]}
+        b = batch[k]
+        assert b["upward_trending_status"] == crit["upward_trending"], k
+        assert b["selection_year_filing"] == crit["non_responders"], k
+        assert b["in_comparison"] == (single["peers"] is not None), k
+        if single["peers"]:
+            assert b["share_lower_in_group"] == single["peers"]["group"]["share_with_lower_rate"]
+            assert b["share_lower_in_industry"] == single["peers"]["industry"]["share_with_lower_rate"]
+
+
+def test_sst_batch_endpoint(world, client):
+    body = _lookup(world)
+    csv_body = f"company,st,zip\n{body['name']},{body['state']},{body['zip_code']}\nNo Such Plant,IL,60601\n"
+    r = client.post("/sst-batch", files={"file": ("plants.csv", csv_body, "text/csv")})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["statement"] == sst.STATEMENT and j["summary"] == {"n_input_rows": 2, "n_matched": 1, "n_unmatched": 1}
+    assert j["results"][0]["sst_group"] in ("manufacturing", "non_manufacturing")
+    c = client.post("/sst-batch?format=csv", files={"file": ("plants.csv", csv_body, "text/csv")})
+    lines = c.text.splitlines()
+    assert c.headers["content-type"].startswith("text/csv")
+    assert lines[0] == f"# {sst.STATEMENT}" and lines[1].startswith("# SYNTHETIC DATA")
+    assert lines[2].startswith("input_row,input_name") and len(lines) == 5
