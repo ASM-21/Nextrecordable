@@ -4,7 +4,7 @@
 
 - **Official ITA files.** Replace the third-party copies with osha.gov downloads for 2016 to 2024 (`DATA-GAPS.md`), retrain, and update `FINDINGS.md`.
 - **Launch.** `deploy/RUNBOOK.md`, in order: legal read, domain, host, DNS, Stripe test mode, email provider, Stripe live.
-- Measure precision of fuzzy DOL-to-ITA links on a hand-labeled sample, then revisit the `inspection_link_share` gate threshold.
+- Measure recall of DOL-to-ITA links (precision is measured: `reports/link_audit.json`), then revisit the `inspection_link_share` gate threshold.
 
 ## Next
 

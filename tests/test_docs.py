@@ -61,7 +61,7 @@ NUMBER = re.compile(r"(?<![\w./-])-?\d[\d,]*(?:\.\d+)?%?")
 STATIC = {
     "1.7", "3.4", "16.8", "4.0", "0.02", "1,923", "100,000", "40,000", "1,000,000",
     "1,000", "2,000", "5,000", "25,000", "10%", "1-19", "20-49", "50-99", "100-249", "250-999", "1,000+",
-    "36", "652",
+    "36", "652", "95%",
 }
 
 
@@ -91,7 +91,7 @@ def _allowed() -> set[str]:
             if f == int(f):
                 out.update({f"{int(f):,}", str(int(f))})
 
-    for name in ("metrics.json", "falsification.json"):
+    for name in ("metrics.json", "falsification.json", "link_audit.json"):
         walk(json.loads((REPORTS / name).read_text()))
     for t in json.loads((ROOT / "nextrecordable" / "data" / "tiers.json").read_text())["tiers"]:
         walk(t)

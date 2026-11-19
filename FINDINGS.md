@@ -61,7 +61,7 @@ For the SST report this matters more than for the model. Among establishments in
 
 ## Matching
 
-7.6% of DOL inspections opened 2019 to 2023 link to an ITA filer. The sanity gate warns below 15%, but most inspections are of construction sites and small employers that never file with ITA, so a low share is expected; the gate threshold was set before real data existed. Not yet measured: precision of the fuzzy links on real data (no labeled pairs).
+7.6% of DOL inspections opened 2019 to 2023 link to an ITA filer. The sanity gate warns below 15%, but most inspections are of construction sites and small employers that never file with ITA, so a low share is expected; the gate threshold was set before real data existed. Precision of the fuzzy links: a random sample of 80 fuzzy links from those years, reviewed pair by pair (name, street, city, ZIP), held 80 correct links out of 80, so precision is at least 96.3% (one-sided 95% bound). The reviewer was Claude, not a second person; labels are in `reports/link_audit.json` by DOL activity number. The closest calls were an adjacent street number in a neighboring town and a parent-company name at the same address. Recall (inspections that should have linked and did not) is not measured.
 
 ## Missing filings are mostly churn, not non-compliance
 
