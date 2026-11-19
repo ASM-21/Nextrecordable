@@ -135,7 +135,7 @@ Batch CSVs need name, state and ZIP columns; common headers (`company`, `zip`, `
 | Team | $499/mo | 25,000 | 5,000 | yes |
 | Enterprise | contact | custom | 5,000 | yes |
 
-Tiers live in `nextrecordable/data/tiers.json`; the pricing page (`/pricing`), the API limits and this table all follow it, and a test pins them. Lookups without a key are allowed, 20 a day per client. Keys arrive by email after a Stripe Payment Link checkout (`/stripe/webhook`); email is dry-run by default and writes to `data/outbox/`. Local `nextrecordable serve` runs with accounts on; tests and `create_app` without an account store run open.
+Tiers live in `nextrecordable/data/tiers.json`; the pricing page (`/pricing`), the API limits and this table all follow it, and a test pins them. Lookups without a key are allowed, 20 a day per client. Keys arrive by email after a Stripe Payment Link checkout (`/stripe/webhook`), and a lost key is replaced through `POST /account/recover` (a one-hour link to the account's email); email is dry-run by default and writes to `data/outbox/`. Local `nextrecordable serve` runs with accounts on; tests and `create_app` without an account store run open.
 
 ## Deploying
 

@@ -97,3 +97,18 @@ in OSHA's public injury data and against published OSHA criteria. They never
 predict whether OSHA will inspect.
 """
     return subject, body
+
+
+def recovery_email(link: str) -> tuple[str, str]:
+    subject = "Replace your nextrecordable API key"
+    body = f"""Someone asked to replace the API key for this email address.
+
+To get a new key, open this link within one hour:
+
+    {link}
+
+Your old key stops working when you do, and the new key arrives in a
+separate email. If you did not ask for this, ignore this message; nothing
+changes.
+"""
+    return subject, body

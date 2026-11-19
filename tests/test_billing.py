@@ -155,3 +155,41 @@ def test_webhook_end_to_end(gated):
     assert ok.status_code == 200 and ok.json()["status"] == "created"
     key = next(line.strip() for line in mail.sent[0]["body"].splitlines() if line.strip().startswith("nr_"))
     assert client.post("/sst-exposure-pdf", json=body, headers={"X-API-Key": key}).status_code == 200
+
+
+def test_key_recovery_rotates_once_and_expires(tmp_path):
+    from datetime import timedelta
+
+    store = AccountStore(tmp_path / "a.sqlite")
+    acct, old = store.create("Owner@Example.com", "pro")
+    store.meter(acct, 7)
+    assert store.start_recovery("nobody@example.com") == []
+    (_, token), = store.start_recovery("owner@example.com")
+    got = store.finish_recovery(token)
+    assert got is not None
+    same, new = got
+    assert same.id == acct.id and same.tier == "pro" and new != old
+    assert store.verify(old) is None and store.verify(new).id == acct.id
+    assert store.usage(acct.id) == 7                         # usage stays with the account
+    assert store.finish_recovery(token) is None              # single use
+    (_, late), = store.start_recovery("owner@example.com", now=datetime.now(UTC) - timedelta(hours=2))
+    assert store.finish_recovery(late) is None               # expired
+    assert store.finish_recovery("") is None
+
+
+def test_recovery_endpoint_does_not_reveal_accounts(gated):
+    client, store, mail, _ = gated
+    _, old = store.create("owner@example.com", "team")
+    a = client.post("/account/recover", json={"email": "owner@example.com"})
+    b = client.post("/account/recover", json={"email": "stranger@example.com"})
+    assert a.status_code == b.status_code == 200 and a.json() == b.json()
+    assert [m["to"] for m in mail.sent] == ["owner@example.com"]
+    link = next(w for w in mail.sent[0]["body"].split() if "/account/recover/confirm?token=" in w)
+    token = link.split("token=")[1]
+    ok = client.get(f"/account/recover/confirm?token={token}")
+    assert ok.status_code == 200 and store.verify(old) is None
+    new = next(line.strip() for line in mail.sent[1]["body"].splitlines() if line.strip().startswith("nr_"))
+    assert store.verify(new).tier == "team"
+    assert client.get(f"/account/recover/confirm?token={token}").status_code == 400
+    codes = [client.post("/account/recover", json={"email": "x@example.com"}).status_code for _ in range(5)]
+    assert codes[-1] == 429

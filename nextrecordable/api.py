@@ -12,6 +12,7 @@ Endpoints
 Accounts (when the app is built with an AccountStore, as in production):
   GET  /pricing           tiers from data/tiers.json, Stripe Payment Links from env
   GET  /account           tier and this month's usage for the X-API-Key
+  POST /account/recover   email a one-hour link that replaces a lost key
   POST /stripe/webhook    creates accounts and emails keys (billing.py)
 Lookups (/score, /sst-exposure) work without a key, limited per client IP per
 day; with a key they count against the tier's monthly quota. /score-batch and
@@ -52,7 +53,7 @@ from pydantic import BaseModel, Field
 
 from . import billing, provenance, sst
 from .accounts import Account, AccountStore, QuotaExceeded, load_tiers
-from .mailer import Mailer, mailer_from_env
+from .mailer import Mailer, key_email, mailer_from_env, recovery_email
 from .match import build_directory, match_rows, suggestions
 from .models.baseline import TrainResult, load_model
 from .normalize import state_code, zip5
@@ -61,6 +62,7 @@ from .report import _clean, _table_exists, ensure_scores, risk_report, score_key
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_BATCH_ROWS = 5_000
 ANONYMOUS_DAILY_LOOKUPS = 20
+RECOVERY_DAILY_REQUESTS = 5
 PAYMENT_LINK_ENV = "NEXTRECORDABLE_PAYMENT_LINK_{}"   # e.g. NEXTRECORDABLE_PAYMENT_LINK_PRO
 
 COLUMN_ALIASES: dict[str, str] = {
@@ -73,6 +75,10 @@ COLUMN_ALIASES: dict[str, str] = {
     "city": "city",
 }
 REQUIRED_COLUMNS = ("name", "state", "zip_code")
+
+
+class RecoverRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
 
 
 class ScoreRequest(BaseModel):
@@ -411,6 +417,39 @@ def create_app(
         return {"tier": acct.tier, "key_prefix": acct.key_prefix, "lookups_this_month": accounts.usage(acct.id),
                 "monthly_lookups": acct.limits.get("monthly_lookups"), "batch_rows": acct.limits.get("batch_rows"),
                 "sst_pdf": acct.limits.get("sst_pdf")}
+
+    recover_lock = threading.Lock()
+    recover_counts: dict[tuple[str, str], int] = defaultdict(int)
+
+    @app.post("/account/recover")
+    def account_recover(req: RecoverRequest, request: Request) -> dict[str, str]:
+        """Same answer whether or not the address has an account, so it cannot be used to find customers."""
+        if accounts is None or mailer is None:
+            raise HTTPException(status_code=404, detail="Accounts are not enabled on this server.")
+        with recover_lock:
+            k = (client_ip(request), datetime.now(UTC).strftime("%Y-%m-%d"))
+            recover_counts[k] += 1
+            if recover_counts[k] > RECOVERY_DAILY_REQUESTS:
+                raise HTTPException(status_code=429, detail="Too many recovery requests today.")
+        for _acct, token in accounts.start_recovery(req.email):
+            subject, body = recovery_email(f"{base_url}/account/recover/confirm?token={token}")
+            mailer.send(req.email.strip().lower(), subject, body)
+        return {"status": "sent_if_registered",
+                "message": "If this address has an account, a link to replace its key is on its way."}
+
+    @app.get("/account/recover/confirm", response_class=HTMLResponse, include_in_schema=False)
+    def account_recover_confirm(token: str = "") -> HTMLResponse:
+        if accounts is None or mailer is None:
+            raise HTTPException(status_code=404, detail="Accounts are not enabled on this server.")
+        done = accounts.finish_recovery(token)
+        if done is None:
+            return HTMLResponse("<!doctype html><title>Link expired</title><p>This link has expired or was "
+                                "already used. Ask for a new one.</p>", status_code=400)
+        acct, key = done
+        subject, body = key_email(acct.limits["name"], key, base_url)
+        mailer.send(acct.email, subject, body)
+        return HTMLResponse("<!doctype html><title>New key sent</title><p>Your old key no longer works. "
+                            "A new key has been emailed to the address on the account.</p>")
 
     @app.post("/stripe/webhook", include_in_schema=False)
     async def stripe_webhook(request: Request) -> dict[str, Any]:
