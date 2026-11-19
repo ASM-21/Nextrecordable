@@ -9,6 +9,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     NEXTRECORDABLE_ACCOUNTS_DB=/app/data/accounts.sqlite \
     NEXTRECORDABLE_OUTBOX_DIR=/app/data/outbox
 
+# LightGBM needs the GNU OpenMP runtime, which the slim image lacks; without it
+# the server dies at import ("libgomp.so.1: cannot open shared object file").
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE NOTICE ./
 COPY nextrecordable ./nextrecordable
