@@ -175,6 +175,7 @@ def create_app(
                 raise HTTPException(status_code=401, detail=f"An API key is required for {need}. See /pricing.")
             day = datetime.now(UTC).strftime("%Y-%m-%d")
             with anon_lock:
+                prune(anon_counts, day)
                 k = (client_ip(request), day)
                 if anon_counts[k] + units > ANONYMOUS_DAILY_LOOKUPS:
                     raise HTTPException(status_code=429, detail=(
@@ -442,7 +443,9 @@ def create_app(
         if accounts is None or mailer is None:
             raise HTTPException(status_code=404, detail="Accounts are not enabled on this server.")
         with recover_lock:
-            k = (client_ip(request), datetime.now(UTC).strftime("%Y-%m-%d"))
+            day = datetime.now(UTC).strftime("%Y-%m-%d")
+            prune(recover_counts, day)
+            k = (client_ip(request), day)
             recover_counts[k] += 1
             if recover_counts[k] > RECOVERY_DAILY_REQUESTS:
                 raise HTTPException(status_code=429, detail="Too many recovery requests today.")
@@ -480,6 +483,12 @@ def create_app(
         return billing.handle_event(event, accounts, mailer, link_tiers=link_tiers, base_url=base_url)
 
     return app
+
+
+def prune(counts: dict[tuple[str, str], int], today: str) -> None:
+    """Drop per-client counters from earlier days (they only ever matter for today)."""
+    for k in [k for k in counts if k[1] != today]:
+        del counts[k]
 
 
 def render_pricing(env: dict[str, str]) -> str:

@@ -61,10 +61,24 @@ def verify(payload: bytes, header: str | None, secret: str, *, now: float | None
 
 def handle_event(event: dict[str, Any], store: AccountStore, mailer: Mailer, *,
                  link_tiers: dict[str, str], base_url: str) -> dict[str, Any]:
-    """Apply one verified event. Returns what happened (never the key)."""
+    """Apply one verified event. Returns what happened (never the key).
+
+    If anything fails (the key email above all), the event is forgotten and
+    the error propagates: the webhook answers 500 and Stripe retries, rather
+    than a paying customer holding an account whose key never arrived.
+    """
     etype, eid = event.get("type", ""), event.get("id", "")
     if store.seen_event(eid, etype):
         return {"status": "duplicate", "type": etype}
+    try:
+        return _apply(event, etype, store, mailer, link_tiers=link_tiers, base_url=base_url)
+    except Exception:
+        store.forget_event(eid)
+        raise
+
+
+def _apply(event: dict[str, Any], etype: str, store: AccountStore, mailer: Mailer, *,
+           link_tiers: dict[str, str], base_url: str) -> dict[str, Any]:
     obj = (event.get("data") or {}).get("object") or {}
     if etype == "checkout.session.completed":
         tier = link_tiers.get(obj.get("payment_link") or "") or (obj.get("metadata") or {}).get("tier")
@@ -80,7 +94,12 @@ def handle_event(event: dict[str, Any], store: AccountStore, mailer: Mailer, *,
         account, key = store.create(email, tier, stripe_customer=customer,
                                     stripe_subscription=obj.get("subscription"))
         subject, body = key_email(load_tiers()[tier]["name"], key, base_url)
-        mailer.send(email, subject, body)
+        try:
+            mailer.send(email, subject, body)
+        except Exception:
+            # The key was never delivered: remove the account so the retry starts clean.
+            store.delete(account.id)
+            raise
         return {"status": "created", "type": etype, "tier": tier, "account": account.id,
                 "key_prefix": account.key_prefix}
     if etype == "customer.subscription.deleted":

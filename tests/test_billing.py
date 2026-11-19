@@ -195,3 +195,32 @@ def test_recovery_endpoint_does_not_reveal_accounts(gated):
     assert client.get(f"/account/recover/confirm?token={token}").status_code == 400
     codes = [client.post("/account/recover", json={"email": "x@example.com"}).status_code for _ in range(5)]
     assert codes[-1] == 429
+
+
+class FailingMailer:
+    def __init__(self):
+        self.calls = 0
+
+    def send(self, to, subject, body):
+        self.calls += 1
+        raise ConnectionError("smtp down")
+
+
+def test_failed_key_email_is_retried_not_lost(tmp_path):
+    """Before: the event was marked processed, the email failed, and Stripe's retry was ignored as a duplicate."""
+    store = AccountStore(tmp_path / "a.sqlite")
+    bad = FailingMailer()
+    with pytest.raises(ConnectionError):
+        billing.handle_event(checkout("evt_r", "plink_pro"), store, bad, link_tiers=LINKS, base_url="x")
+    assert store.by_stripe_customer("cus_1") == []           # no orphan account without a delivered key
+    good = DryRunMailer(tmp_path / "o")
+    res = billing.handle_event(checkout("evt_r", "plink_pro"), store, good, link_tiers=LINKS, base_url="x")
+    assert res["status"] == "created" and len(good.sent) == 1
+
+
+def test_daily_counters_are_pruned():
+    from nextrecordable.api import prune
+
+    counts = {("1.1.1.1", "2026-11-18"): 5, ("1.1.1.1", "2026-11-19"): 2, ("2.2.2.2", "2026-11-17"): 1}
+    prune(counts, "2026-11-19")
+    assert counts == {("1.1.1.1", "2026-11-19"): 2}
