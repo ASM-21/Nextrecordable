@@ -39,6 +39,8 @@ For one establishment (lookup page at `/` or `POST /score`) or a whole book of b
 
 `POST /sst-batch` takes a CSV of establishments (an extension center's client plants, a broker's book) and returns one row of SST position per establishment, as JSON or, with `?format=csv`, as a spreadsheet whose first line is the statement below. It counts each row against the plan's batch limit.
 
+`nextrecordable region-summary --name "Lehigh Valley, PA" --state PA --zip3 180 --zip3 181` writes counts only (no establishment named, counts under 5 suppressed) for a region's manufacturers: how many file, how many sit high in their SST group, how many meet the upward-trend conditions. Example: `reports/regions/lehigh-valley-pa.md`.
+
 Every report carries this sentence: **This report describes position against published criteria and never predicts whether OSHA will inspect.** OSHA does not publish the DART cutoffs it uses, three of the four lists are random samples, and only OSHA and State Plans see the lists, so the report gives percentile position and states no cutoff. The directive's dates, quotes and source are in `nextrecordable/data/sst_cpl_02_01_067.json`; no successor directive had been announced as of November 16, 2026. No Form 300/301 case data, and so no narrative about any worker, can reach the report.
 
 ## Results on real data
@@ -171,7 +173,8 @@ nextrecordable/
   sanity.py      data gates
   pipeline.py    build, train, reports/METRICS.md
   provenance.py  where the loaded files came from; the notice every output carries
-  sst.py         SST exposure report and PDF; data/sst_cpl_02_01_067.json is the directive
+  sst.py         SST exposure report, PDF and batch; data/sst_cpl_02_01_067.json is the directive
+  region.py      counts-only SST summaries for a region
   falsify.py     attempts to break the headline metrics
   accounts.py    API keys, tiers (data/tiers.json), monthly metering
   billing.py     Stripe webhook: signature check, accounts, key email

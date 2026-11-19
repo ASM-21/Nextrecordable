@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from datetime import date
 
 import duckdb
@@ -291,3 +292,22 @@ def test_sst_batch_endpoint(world, client):
     assert c.headers["content-type"].startswith("text/csv")
     assert lines[0] == f"# {sst.STATEMENT}" and lines[1].startswith("# SYNTHETIC DATA")
     assert lines[2].startswith("input_row,input_name") and len(lines) == 5
+
+
+def test_region_summary_counts_only_and_suppresses_small_cells(sst_con, tmp_path):
+    from nextrecordable import region
+
+    s = region.region_summary(sst_con, name="Test Region, IL", state="IL", zip3=["616"], naics2=["33"],
+                              as_of=date(2026, 11, 16))
+    text = json.dumps(s) + region.render_md(s)
+    for name in ("Rising Forge", "Peer Plant", "Gone Quiet"):
+        assert name not in text, name                      # no establishment is named
+    assert s["statement"] == sst.STATEMENT and sst.STATEMENT in region.render_md(s)
+    assert s["upward_trending"]["meets_both_conditions_as_read"] == "<5"      # only Rising Forge
+    assert s["selection_year_filing"]["no_filing_found"] == "<5"              # only Gone Quiet Inc
+    assert isinstance(s["in_comparison"], int) and s["in_comparison"] >= 40
+    assert region.suppress(0) == 0 and region.suppress(4) == "<5" and region.suppress(5) == 5
+    j, m = region.write(s, tmp_path)
+    assert j.name == "test-region-il.json" and m.read_text().startswith("# SST positions: Test Region, IL")
+    with pytest.raises(ValueError):
+        region.region_summary(sst_con, name="x", state="IL'; DROP TABLE x; --", zip3=["616"], naics2=["33"])

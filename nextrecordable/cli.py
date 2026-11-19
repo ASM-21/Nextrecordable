@@ -205,6 +205,22 @@ def falsify(
                   f"{len(rep['size_bands']['bands'])} size bands, {len(rep['other_years'])} extra test years")
 
 
+@app.command("region-summary")
+def region_summary_cmd(
+    name: Annotated[str, typer.Option(help="Label, e.g. 'Lehigh Valley, PA'")],
+    state: Annotated[str, typer.Option(help="Two-letter state")],
+    zip3: Annotated[list[str], typer.Option("--zip3", help="ZIP prefix (repeat)")],
+    naics2: Annotated[list[str], typer.Option("--naics2", help="NAICS sector (repeat)")] = ["31", "32", "33"],  # noqa: B006
+):
+    """Aggregate SST positions for a region (counts only) -> reports/regions/<name>.json and .md."""
+    from .region import region_summary, write
+
+    with _con(read_only=True) as con:
+        summary = region_summary(con, name=name, state=state.upper(), zip3=zip3, naics2=naics2)
+    _j, m = write(summary, config.REPORTS_DIR / "regions")
+    console.print(f"[green]{m}[/green] ({summary['in_comparison']} establishments compared)")
+
+
 @app.command("synthetic-baseline")
 def synthetic_baseline(
     n: Annotated[int, typer.Option(help="Synthetic establishments")] = 3000,
