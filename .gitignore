@@ -10,7 +10,7 @@ dist/
 .ipynb_checkpoints/
 
 # Downloaded data, the database and trained models are all rebuilt by `run-all`
-data/
+/data/
 
 # IDE / OS
 .vscode/
@@ -21,3 +21,7 @@ data/
 # Secrets
 .env
 .envrc
+
+# Example reports name real establishments; kept out of the repo (see DECISIONS.md)
+reports/examples/
+deploy/.env

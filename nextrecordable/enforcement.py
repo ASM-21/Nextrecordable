@@ -74,16 +74,24 @@ VIOLATION_COLUMN_MAP: dict[str, tuple[str, ...]] = {
 }
 
 
-def _load_mapped(con: duckdb.DuckDBPyConnection, csv_path: Path, table: str,
+# Placeholders pandas writes for missing values; DOL's bulk files (data.dol.gov)
+# are pandas exports, so empty dates arrive as "NaT" and empty numbers as "nan".
+# TRY_CAST('nan' AS DOUBLE) is a real NaN in DuckDB, and one NaN penalty turned
+# an establishment's whole penalty sum into NaN.
+MISSING_TOKENS = ("nan", "NaN", "NaT", "None", "NULL")
+
+
+def _load_mapped(con: duckdb.DuckDBPyConnection, csv_path: Path | str | list, table: str,
                  column_map: dict[str, tuple[str, ...]]) -> int:
     raw = f"_raw_{table}"
-    read_csv_varchar(con, Path(csv_path), raw)
+    read_csv_varchar(con, csv_path, raw)
     available = {r[1].lower(): r[1] for r in con.execute(f"PRAGMA table_info('{raw}')").fetchall()}
     parts = []
     for canonical, candidates in column_map.items():
         col = next((available[c] for c in candidates if c in available), None)
+        missing = ", ".join(f"'{t}'" for t in ("", *MISSING_TOKENS))
         parts.append(
-            f'NULLIF(trim("{col}"), \'\') AS {canonical}' if col
+            f'CASE WHEN trim("{col}") IN ({missing}) THEN NULL ELSE trim("{col}") END AS {canonical}' if col
             else f"CAST(NULL AS VARCHAR) AS {canonical}"
         )
     con.execute(f"DROP TABLE IF EXISTS {table}")
@@ -92,16 +100,53 @@ def _load_mapped(con: duckdb.DuckDBPyConnection, csv_path: Path, table: str,
     return con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
 
-def load_inspection_csv(con: duckdb.DuckDBPyConnection, csv_path: Path,
-                        table_name: str = "osha_inspection") -> int:
-    """Load DOL osha_inspection (all text, canonical column names)."""
-    return _load_mapped(con, csv_path, table_name, INSPECTION_COLUMN_MAP)
+def load_inspection_csv(con: duckdb.DuckDBPyConnection, csv_path: Path | str | list,
+                        table_name: str = "osha_inspection", *, since_year: int | None = None) -> int:
+    """Load DOL osha_inspection (all text, canonical column names).
+
+    `csv_path` is one CSV, a list of CSVs or a directory of chunk files.
+    `since_year` keeps inspections opened in that year or later; the full
+    table goes back to the 1970s and the panel only looks ten years back.
+    """
+    n = _load_mapped(con, csv_path, table_name, INSPECTION_COLUMN_MAP)
+    if since_year is not None:
+        con.execute(f"DELETE FROM {table_name} WHERE coalesce({_year_sql('open_date')}, 0) < {int(since_year)}")
+        n = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+    return n
 
 
-def load_violation_csv(con: duckdb.DuckDBPyConnection, csv_path: Path,
-                       table_name: str = "osha_violation") -> int:
-    """Load DOL osha_violation (all text, canonical column names)."""
-    return _load_mapped(con, csv_path, table_name, VIOLATION_COLUMN_MAP)
+def load_violation_csv(con: duckdb.DuckDBPyConnection, csv_path: Path | str | list,
+                       table_name: str = "osha_violation", *, inspection_table: str | None = None) -> int:
+    """Load DOL osha_violation (all text, canonical column names).
+
+    With `inspection_table`, keeps only citations whose inspection is loaded.
+    """
+    n = _load_mapped(con, csv_path, table_name, VIOLATION_COLUMN_MAP)
+    if inspection_table is not None:
+        con.execute(
+            f"DELETE FROM {table_name} WHERE activity_nr NOT IN (SELECT activity_nr FROM {inspection_table})"
+        )
+        n = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+    return n
+
+
+def find_dol_files(dol_dir: Path) -> tuple[list[Path], list[Path]]:
+    """Inspection and violation CSVs under data/raw/dol, in either layout.
+
+    Legacy catalog (enforcedata.dol.gov): osha_inspection*.csv, osha_violation*.csv.
+    Bulk download (data.dol.gov): inspection/*.csv and violation/*.csv, the
+    extracted OSHA_inspection.zip and OSHA_violation.zip.
+    """
+    from .load import csv_sources
+
+    def pick(stem: str) -> list[Path]:
+        sub = Path(dol_dir) / stem
+        if sub.is_dir() and list(sub.glob("*.csv")):
+            return csv_sources(sub)
+        flat = sorted(Path(dol_dir).glob(f"osha_{stem}*.csv"))
+        return flat[-1:]
+
+    return pick("inspection"), pick("violation")
 
 
 def _year_sql(col: str) -> str:
@@ -193,7 +238,8 @@ def build_enforcement_aggregates(
         WITH viol AS (
             SELECT activity_nr,
                    upper(left(trim(coalesce(viol_type, '')), 1)) AS code,
-                   coalesce(TRY_CAST(initial_penalty AS DOUBLE), 0) AS initial_penalty
+                   CASE WHEN isfinite(TRY_CAST(initial_penalty AS DOUBLE))
+                        THEN TRY_CAST(initial_penalty AS DOUBLE) ELSE 0 END AS initial_penalty
             FROM {violation_table}
             WHERE upper(trim(coalesce(delete_flag, ''))) <> 'X'
         ),
