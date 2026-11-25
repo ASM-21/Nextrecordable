@@ -128,6 +128,12 @@ class AccountStore:
         with self._lock:
             self._db.execute("UPDATE accounts SET tier = ? WHERE id = ?", (tier, account_id))
 
+    def delete(self, account_id: int) -> None:
+        """Remove an account whose key was never delivered."""
+        with self._lock:
+            self._db.execute("DELETE FROM usage WHERE account_id = ?", (account_id,))
+            self._db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+
     def deactivate(self, account_id: int) -> None:
         with self._lock:
             self._db.execute("UPDATE accounts SET active = 0 WHERE id = ?", (account_id,))
@@ -193,3 +199,8 @@ class AccountStore:
             self._db.execute("UPDATE accounts SET key_hash = ?, key_prefix = ? WHERE id = ?",
                              (hash_key(key), key[: len(KEY_PREFIX) + 8], r[0]))
         return self.get(r[0]), key
+
+    def forget_event(self, event_id: str) -> None:
+        """Undo seen_event, so Stripe's retry of a failed event is processed again."""
+        with self._lock:
+            self._db.execute("DELETE FROM stripe_events WHERE id = ?", (event_id,))

@@ -152,7 +152,28 @@ def test_lookup_page_wires_sst_and_data_notice():
     import nextrecordable
 
     page = (Path(nextrecordable.__file__).parent / "static" / "index.html").read_text()
-    for needle in ('fetch("/sst-exposure"', "/sst-exposure-pdf", "r.data_notice", "s.statement", "drivers_note",
+    for needle in ('fetch("/sst-exposure"', "/sst-exposure-pdf", "/score-pdf", "r.data_notice", "s.statement", "drivers_note",
                    'href="/pricing"', '"X-API-Key"'):
         assert needle in page, needle
     assert "innerHTML" in page and "esc(" in page          # server text is escaped before it is inserted
+
+
+def test_score_pdf_renders_with_notice_and_caveats(world):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from nextrecordable.report import render_pdf, risk_report
+
+    con, result = world["con"], world["result"]
+    name, state, z = con.execute(
+        "SELECT establishment_name, state, zip5 FROM ita_panel WHERE year = 2024 ORDER BY estab_key LIMIT 1").fetchone()
+    client = TestClient(create_app(con, result))
+    r = client.post("/score-pdf", json={"name": name, "state": state, "zip_code": z})
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf" and r.content.startswith(b"%PDF")
+    key = con.execute("SELECT estab_key FROM ita_panel ORDER BY estab_key LIMIT 1").fetchone()[0]
+    rep = risk_report(con, key, replace(result, rate_served="credibility"))
+    rep["data_notice"] = "SYNTHETIC DATA: test"
+    raw = render_pdf(rep, compress=False)
+    assert b"SYNTHETIC DATA: test" in raw and b"undercount" in raw and b"no model drivers" in raw
+    assert render_pdf({"error": "no_data", "message": "x"}).startswith(b"%PDF")

@@ -243,3 +243,124 @@ def ensure_scores(con: duckdb.DuckDBPyConnection, result: TrainResult, *,
         from .models.baseline import materialize_scores
 
         materialize_scores(con, result, panel_table=panel_table, output=scores_table)
+
+
+# ---------------------------------------------------------------------- PDF
+
+def render_pdf(report: dict[str, Any], *, compress: bool = True) -> bytes:
+    """One- to two-page PDF of a risk_report() (the broker's leave-behind). Requires reportlab."""
+    import io
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    def esc(text: Any) -> str:
+        return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def num(v: Any, d: int = 1) -> str:
+        return "n/a" if v is None else f"{v:,.{d}f}"
+
+    ss = getSampleStyleSheet()
+    body = ParagraphStyle("b", parent=ss["BodyText"], fontSize=9.5, leading=13)
+    small = ParagraphStyle("s", parent=body, fontSize=7.8, leading=9.6, spaceAfter=1,
+                           textColor=colors.HexColor("#444444"))
+    h1 = ParagraphStyle("h1", parent=ss["Heading1"], fontSize=16, spaceAfter=2)
+    h2 = ParagraphStyle("h2", parent=ss["Heading2"], fontSize=11, spaceBefore=6, spaceAfter=3)
+    big = ParagraphStyle("big", parent=body, fontSize=26, leading=30, fontName="Helvetica-Bold")
+    warn = ParagraphStyle("w", parent=body, fontName="Helvetica-Bold", textColor=colors.HexColor("#8a1f11"),
+                          borderColor=colors.HexColor("#8a1f11"), borderWidth=0.8, borderPadding=6,
+                          spaceBefore=6, spaceAfter=10)
+    notice = report.get("data_notice")
+    story: list[Any] = [Paragraph("Injury risk report", h1)]
+    if notice:
+        story.append(Paragraph(esc(notice), warn))
+    if report.get("error"):
+        story.append(Paragraph(esc(report.get("message", "No data.")), body))
+    else:
+        addr = ", ".join(str(report[k]) for k in ("street_address", "city", "state", "zip5") if report.get(k))
+        story.append(Paragraph(f"<b>{esc(report.get('establishment_name') or '')}</b><br/>{esc(addr)}<br/>"
+                               f"NAICS {esc(report.get('naics_code') or 'n/a')} &middot; latest filing "
+                               f"{esc(report.get('latest_year'))}", body))
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(num(report.get("expected_tcr_next")), big))
+        story.append(Paragraph(f"expected recordable cases per 100 full-time workers in {esc(report.get('forecast_year'))} "
+                               "(per 200,000 hours worked)", body))
+        pct = report.get("peer_pctile")
+        if pct is not None:
+            story.append(Paragraph(f"{esc((report.get('risk_band') or '').capitalize())}: "
+                                   f"{round(100 * pct)}th percentile among {num(report.get('peer_count'), 0)} "
+                                   f"establishments in {esc(report.get('peer_group'))}.", body))
+        cur = report.get("current_year_metrics") or {}
+        enf = report.get("enforcement")
+        if enf is None:
+            enf_txt = "enforcement data not loaded"
+        elif (enf.get("enf_inspections_2y") or 0) > 0:
+            enf_txt = (f"{num(enf.get('enf_inspections_2y'), 0)} inspections, {num(enf.get('enf_citations_2y'), 0)} "
+                       f"citations, ${num(enf.get('enf_initial_penalty_2y'), 0)} initial penalties")
+        else:
+            enf_txt = "none on record"
+        facts = [
+            ["Chance of at least one recordable case", "n/a" if report.get("p_any_next") is None
+             else f"{round(100 * report['p_any_next'])}%"],
+            ["Experience-rated starting point", num(report.get("experience_rated_tcr_next"))],
+            [f"Case rate in {report.get('latest_year')}", num(cur.get("tcr"))],
+            ["Industry median case rate", num(cur.get("naics4_tcr_median"))],
+            ["OSHA inspections, last two years", enf_txt],
+            ["Confidence", f"{report.get('confidence', '')}: {report.get('confidence_note', '')}"],
+        ]
+        t = Table(facts, hAlign="LEFT", colWidths=[2.6 * inch, 4.2 * inch])
+        t.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 9), ("LINEBELOW", (0, 0), (-1, -1), 0.3, colors.grey),
+                               ("VALIGN", (0, 0), (-1, -1), "TOP"), ("TOPPADDING", (0, 0), (-1, -1), 2),
+                               ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
+        story += [Spacer(1, 6), t]
+        drivers = report.get("risk_drivers") or []
+        if drivers:
+            story.append(Paragraph("What moves the estimate off its starting point", h2))
+            for dr in drivers:
+                mult = f"x{dr['rate_multiplier']:.2f}" if dr.get("rate_multiplier") else ""
+                story.append(Paragraph(f"{esc(mult)} {esc(dr['label'])}", body))
+        elif report.get("drivers_note"):
+            story.append(Paragraph(esc(report["drivers_note"]), small))
+        story.append(Paragraph("Filed with OSHA", h2))
+        rows = [["Year", "Employees", "Hours worked", "Recordable", "DART", "Case rate", "DART rate", "Industry median"]]
+        for h in reversed(report.get("history") or []):
+            rows.append([str(h["year"]), num(h.get("employees"), 0),
+                         "not usable" if h.get("hours_worked") is None else num(h["hours_worked"], 0),
+                         num(h.get("n_recordable"), 0), num(h.get("n_dart"), 0), num(h.get("tcr")),
+                         num(h.get("dart_rate")), num(h.get("naics4_tcr_median"))])
+        ht = Table(rows, hAlign="LEFT")
+        ht.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 8.5), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                                ("LINEBELOW", (0, 0), (-1, 0), 0.6, colors.black), ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                                ("TOPPADDING", (0, 0), (-1, -1), 1.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)]))
+        story.append(ht)
+        mm = report.get("model_metadata") or {}
+        story.append(Paragraph("How good is this estimate", h2))
+        story.append(Paragraph(
+            f"Models trained on filings through {esc(mm.get('train_through'))} and tested on {esc(mm.get('test_year'))} "
+            f"filings predicting the following year. On that test year, ranking by the chance of any case reached an AUC "
+            f"of {num(mm.get('test_auc'), 3)}. Full results and the checks that tried to break them are published with "
+            "the methodology.", small))
+        story.append(Paragraph("Read before relying on this", h2))
+        for c in report.get("caveats") or []:
+            story.append(Paragraph("&bull; " + esc(c), small))
+        story.append(Paragraph("Independent analysis of public OSHA and Department of Labor data. Not affiliated with, "
+                               "endorsed by, or produced on behalf of OSHA or the U.S. Department of Labor. Not legal "
+                               "advice. Do not republish scores about named establishments without legal review.", small))
+
+    def footer(canvas, doc):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 7)
+        canvas.drawString(0.75 * inch, 0.5 * inch, "nextrecordable injury risk report: public data, reported cases only.")
+        if notice:
+            canvas.setFillColor(colors.HexColor("#8a1f11"))
+            canvas.drawString(0.75 * inch, 0.36 * inch, notice[:150])
+        canvas.restoreState()
+
+    buf = io.BytesIO()
+    SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.75 * inch, rightMargin=0.75 * inch, topMargin=0.7 * inch,
+                      bottomMargin=0.8 * inch, title="Injury risk report", author="nextrecordable",
+                      pageCompression=1 if compress else 0).build(story, onFirstPage=footer, onLaterPages=footer)
+    return buf.getvalue()
