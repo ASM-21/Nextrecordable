@@ -1,8 +1,10 @@
 """Configuration: data source URLs, paths, schema hints.
 
-URLs were verified against https://www.osha.gov/Establishment-Specific-Injury-and-Illness-Data
-on 2026-05-15. OSHA occasionally shifts file naming conventions. If a download
-returns 404, re-fetch the listing page and update these URLs.
+URLs were verified against OSHA's listing page, https://www.osha.gov/itadata
+(formerly /Establishment-Specific-Injury-and-Illness-Data), on 2026-11-25; all
+2016-2024 links were unchanged since 2026-05-15. OSHA occasionally shifts file
+naming conventions. If a download returns 404, re-fetch the listing page and
+update these URLs.
 """
 
 import os
@@ -32,6 +34,12 @@ ITA_SUMMARY_URLS: dict[int, str] = {
     2023: "https://www.osha.gov/sites/default/files/ITA_300A_Summary_Data_2023_through_12-31-2024.zip",
     2024: "https://www.osha.gov/sites/default/files/ITA_300A_Summary_Data_2024_through_12-31-2025.zip",
 }
+# Left out on purpose: 2025 is published (as of 2026-11-25) only as an early
+# snapshot, a bare CSV "through 08-31-2026" at
+# https://www.osha.gov/sites/default/largefiles/ITA_300A_Summary_Data_2025_through_08-31-2026.csv
+# Adding it would make 2025 the outcome year, and late filers in an early
+# snapshot look like non-filers (the problem the old 2023 copy had). The
+# downloader also expects zips. Add it once OSHA posts the through-12-31 file.
 
 # ---------- ITA Case Detail (Forms 300/301) ----------
 # Coverage: establishments with 100+ employees in designated high-hazard industries.

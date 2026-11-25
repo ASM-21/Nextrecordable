@@ -1,4 +1,4 @@
-.PHONY: help dev-install test lint fix run-all download load build sanity train serve explore clean
+.PHONY: help dev-install test lint fix run-all refresh-official download load build sanity train serve explore clean
 
 CLI := python -m nextrecordable.cli
 
@@ -7,6 +7,7 @@ help:
 	@echo "make test          run the test suite (synthetic data, no network)"
 	@echo "make lint          ruff"
 	@echo "make run-all       download -> load -> build -> sanity -> train (real OSHA data)"
+	@echo "make refresh-official  replace third-party ITA copies with osha.gov files, retrain (DATA-GAPS.md)"
 	@echo "make download | load | build | sanity | train   one step at a time"
 	@echo "make serve         run the API and lookup page on http://127.0.0.1:8000"
 	@echo "make clean         remove caches"
@@ -25,6 +26,9 @@ fix:
 
 run-all:
 	$(CLI) run-all
+
+refresh-official:
+	$(CLI) refresh-official
 
 download:
 	$(CLI) download summary

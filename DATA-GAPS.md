@@ -1,6 +1,8 @@
 # Data gaps: finishing the real run with official files
 
-**Status (2026-11-18).** The model, METRICS.md and the SST report run on real data, but the ITA files are third-party copies, and only five years are loaded. osha.gov's CDN answered 403 to every request from the build machine, robots.txt included. The DOL enforcement files are official (data.dol.gov bulk downloads, snapshot 2026-11-15) and need nothing.
+**Status (2026-11-25).** The model, METRICS.md and the SST report run on real data, but the ITA files are third-party copies, and only five years are loaded. The DOL enforcement files are official (data.dol.gov bulk downloads, snapshot 2026-11-15).
+
+**Why it isn't done yet.** The cloud machines this repo is built on cannot reach osha.gov or data.dol.gov. On 2026-11-25 their outbound proxy refused the connection to both hosts before any request reached OSHA, so the 403s first seen on 2026-11-18 most likely came from that network, not from OSHA's CDN. A home or office connection should work. The download links themselves were checked against OSHA's listing page, https://www.osha.gov/itadata, on 2026-11-25: all nine 2016 to 2024 links in `config.py` are unchanged.
 
 | year | what is loaded now | what to load |
 |---|---|---|
@@ -9,79 +11,40 @@
 | 2021 | copy, "submitted thru 8-29-2022" | official summary file |
 | 2023 | copy, "through 3-16-2024" (early, so late filers look like non-filers) | official file through 12-31-2024. **This year matters most: SST selects on it.** |
 | 2024 | nothing | official summary file through 12-31-2025 |
-| 2025 | nothing | if OSHA has published it, add its URL to `config.py` |
+| 2025 | nothing | published 2026 only as an early CSV "through 08-31-2026"; left out on purpose (see the note under `ITA_SUMMARY_URLS` in `config.py`) |
 
 Copies came from `github.com/nbrady387/DSCI-235-Final` at commit `936d58068d3262ea099e031ea1ac82b5c4c918c2`, a 2024 student project. They match OSHA's column layout, but nothing confirms they are unmodified.
 
-## Steps (about 45 minutes, most of it waiting)
+## One command (about an hour, most of it waiting)
 
-Run on a machine that can reach osha.gov, from the repo root with the virtualenv active.
-
-1. Check the URLs still resolve. OSHA renames files now and then; the listing page is https://www.osha.gov/Establishment-Specific-Injury-and-Illness-Data.
+On a machine that can reach osha.gov, from the repo root with the virtualenv active and the existing `data/` folder in place:
 
 ```bash
-python scripts/check_source_urls.py
+nextrecordable refresh-official
 ```
 
-2. Fix any URL that failed in `nextrecordable/config.py` (`ITA_SUMMARY_URLS`), using the link text on the listing page. These are the names as of 2026-05-15:
+It stops at the first failed check, and a rerun keeps finished downloads. In order, it:
 
-| year | URL |
-|---|---|
-| 2016 | https://www.osha.gov/sites/default/files/ITA%20Data%20CY%202016.zip |
-| 2017 | https://www.osha.gov/sites/default/files/ITA%20Data%20CY%202017.zip |
-| 2018 | https://www.osha.gov/sites/default/files/ITA%20Data%20CY%202018.zip |
-| 2019 | https://www.osha.gov/sites/default/files/ITA%20Data%20CY%202019.zip |
-| 2020 | https://www.osha.gov/sites/default/files/ITA-Data-CY-2020.zip |
-| 2021 | https://www.osha.gov/sites/default/files/ITA-data-cy2021.zip |
-| 2022 | https://www.osha.gov/sites/default/files/ITA-data-cy2022.zip |
-| 2023 | https://www.osha.gov/sites/default/files/ITA_300A_Summary_Data_2023_through_12-31-2024.zip |
-| 2024 | https://www.osha.gov/sites/default/files/ITA_300A_Summary_Data_2024_through_12-31-2025.zip |
+1. Checks every 2016 to 2024 URL and stops before downloading anything if one is gone. A 403 on every URL means the network is refusing osha.gov; try another connection. A 404 on one means OSHA renamed it: fix it in `nextrecordable/config.py` from the listing page.
+2. Downloads the nine summary zips to `data/raw/ita_summary/`.
+3. Checks each zip opens, holds a CSV, and has the columns the build needs. A saved error page fails here.
+4. Compares each official year with the copy it replaces (rows, distinct establishments, death, case and hours totals) and writes `reports/official_vs_copy.json`. Counts only. 2023 will differ, because the copy stopped in March 2024; any other year that differs is worth a line in FINDINGS.md.
+5. Moves the copies to `data/raw/ita_summary/third_party_copies/`. Nothing is deleted.
+6. Rewrites `data/raw/SOURCES.json` as official, keeping the DOL entries; the old file stays as `SOURCES.previous.json`. With no third-party file declared, the data notice drops out of every output by itself.
+7. Runs `load`, `build` (about 11 minutes on 4 cores: it links 1.8 million inspections), `sanity`, `train` (about a minute) and `falsify` (about 2 minutes).
 
-3. Download. Files land in `data/raw/ita_summary/ita_summary_<year>.zip`. When a year has both a zip and a CSV copy, the loader uses the zip, but remove the copies anyway so nothing ambiguous remains:
+Add `--refresh-dol` to download fresh enforcement files from data.dol.gov as well (adds the DOL downloads and a `load-enforcement` step), or `--no-train` to stop after step 6.
 
-```bash
-nextrecordable download summary
-```
+Then:
 
-```bash
-rm data/raw/ita_summary/ita_summary_20*.csv
-```
+1. With 2016 to 2024 loaded the test year moves to 2023 (predicting 2024), so the headline numbers change. `pytest tests/test_docs.py` fails until FINDINGS.md and the README's results quote the new `reports/*.json` values; edit the numbers it names, and add a line on anything `official_vs_copy.json` shows.
+2. Update the README status line and the FINDINGS.md opening paragraph, which still say the files are copies.
+3. Optional: `nextrecordable synthetic-baseline` refreshes the comparison run in METRICS.md (about a minute).
+4. Commit `reports/` and the edited docs. Never commit `data/` (it is gitignored).
 
-4. Optional, ten minutes: check whether the copies were faithful. Before deleting them in step 3, compare row counts and a checksum of the case columns per year; a mismatch is worth a line in FINDINGS.md.
+## The same steps by hand
 
-5. Declare the sources. Replace `data/raw/SOURCES.json` with this, adding one line per year you downloaded (the build hashes each file):
-
-```json
-{
-  "kind": "official",
-  "note": "ITA files downloaded from osha.gov; DOL files from data.dol.gov.",
-  "files": {
-    "ita_summary/ita_summary_2023.zip": {"origin": "https://www.osha.gov/sites/default/files/ITA_300A_Summary_Data_2023_through_12-31-2024.zip", "snapshot": "through 2024-12-31"},
-    "dol/OSHA_inspection.zip": {"origin": "https://data.dol.gov/data-catalog/OSHA/inspection/OSHA_inspection.zip", "snapshot": "2026-11-15"},
-    "dol/OSHA_violation.zip": {"origin": "https://data.dol.gov/data-catalog/OSHA/violation/OSHA_violation.zip", "snapshot": "2026-11-15"}
-  }
-}
-```
-
-Once no file is declared `third_party_copy`, the data notice disappears from every output by itself.
-
-6. Rebuild and retrain. The full build links 1.8 million inspections and takes about 11 minutes on 4 cores; training takes about a minute; the falsification pass about 2 minutes; the synthetic baseline about 1 minute.
-
-```bash
-nextrecordable load
-```
-
-```bash
-nextrecordable build
-```
-
-```bash
-nextrecordable sanity && nextrecordable train && nextrecordable falsify
-```
-
-7. Update the prose. With 2016 to 2024 loaded the test year moves to 2023 (predicting 2024), so the headline numbers change. `pytest tests/test_docs.py` fails until FINDINGS.md and the README's results quote the new `reports/*.json` values; edit the numbers it names.
-
-8. Commit `reports/` and the edited docs. Never commit `data/` (it is gitignored).
+`nextrecordable download summary`, move `data/raw/ita_summary/ita_summary_20*.csv` aside, write `data/raw/SOURCES.json` with `"kind": "official"` and one entry per downloaded zip (format in `provenance.py`; the build hashes each file), then `nextrecordable load`, `build`, `sanity`, `train` and `falsify`.
 
 ## Enforcement files, if they need refreshing
 
@@ -93,7 +56,7 @@ curl -O https://data.dol.gov/data-catalog/OSHA/inspection/OSHA_inspection.zip
 curl -O https://data.dol.gov/data-catalog/OSHA/violation/OSHA_violation.zip
 ```
 
-Unzip each into `data/raw/dol/inspection/` and `data/raw/dol/violation/` (one folder of `*_chunk_<n>.csv` files each), then:
+Or run `nextrecordable refresh-official --refresh-dol`, which does all of this. By hand: unzip each into `data/raw/dol/inspection/` and `data/raw/dol/violation/` (one folder of `*_chunk_<n>.csv` files each), then:
 
 ```bash
 nextrecordable load-enforcement --inspection data/raw/dol/inspection --violation data/raw/dol/violation

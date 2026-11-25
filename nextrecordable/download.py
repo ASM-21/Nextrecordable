@@ -20,9 +20,13 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
+from . import __version__
 from .config import ITA_CASE_DETAIL_URLS, ITA_SUMMARY_URLS, RAW_DIR
 
 CHUNK_SIZE = 1 << 16  # 64 KiB
+# Say who is downloading. httpx's default "python-httpx/x.y" is a common reason
+# for a government CDN to refuse a request.
+HEADERS = {"User-Agent": f"nextrecordable/{__version__} (+https://github.com/ASM-21/Nextrecordable)"}
 
 
 def download_file(url: str, dest: Path, *, force: bool = False) -> Path:
@@ -33,7 +37,7 @@ def download_file(url: str, dest: Path, *, force: bool = False) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
 
-    with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as r:
+    with httpx.stream("GET", url, follow_redirects=True, timeout=60.0, headers=HEADERS) as r:
         r.raise_for_status()
         total = int(r.headers.get("content-length", 0))
 
