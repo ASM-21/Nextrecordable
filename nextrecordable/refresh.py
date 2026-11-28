@@ -183,11 +183,17 @@ def compare(official: dict[str, Any], copy: dict[str, Any]) -> dict[str, Any]:
             "identical_counts": all(d == 0 for d in diff.values())}
 
 
-def stash_copies(summary_dir: Path) -> list[Path]:
-    """Move ita_summary_<year>.csv copies out of the loader's sight. Returns new paths."""
+def stash_copies(summary_dir: Path, years: list[int]) -> list[Path]:
+    """Move the ita_summary_<year>.csv copies of `years` out of the loader's sight. Returns new paths.
+
+    Only the refreshed years: a copy for any other year stays loaded and stays
+    declared as a copy, so a partial refresh never passes for an official run.
+    """
     dest = summary_dir / COPIES_DIRNAME
     moved = []
-    for p in sorted(summary_dir.glob("ita_summary_*.csv")):
+    for p in [summary_dir / f"ita_summary_{y}.csv" for y in sorted(years)]:
+        if not p.exists():
+            continue
         dest.mkdir(parents=True, exist_ok=True)
         target = dest / p.name
         shutil.move(str(p), str(target))
@@ -200,7 +206,18 @@ def official_sources(raw_dir: Path, years: dict[int, str], downloaded: dt.date,
     """The new SOURCES.json. Keeps declared DOL entries unless `dol` replaces them."""
     old_path = raw_dir / "SOURCES.json"
     old = json.loads(old_path.read_text()) if old_path.exists() else {}
+    old_kind = old.get("kind", "undeclared")
     files: dict[str, Any] = {}
+    # ITA files for years not being refreshed keep their declaration (and their kind).
+    for rel, meta in old.get("files", {}).items():
+        m = re.fullmatch(r"ita_summary/ita_summary_(\d{4})\.(csv|zip)", rel)
+        if m and int(m.group(1)) not in years:
+            files[rel] = {**meta, "kind": meta.get("kind", old_kind)}
+    # A copy still in place for an untouched year is loaded, so it must be declared.
+    for p in sorted((raw_dir / "ita_summary").glob("ita_summary_*.csv")):
+        rel = f"ita_summary/{p.name}"
+        if rel not in files and int(p.stem.rsplit("_", 1)[-1]) not in years:
+            files[rel] = {"kind": "third_party_copy", "note": "found in data/raw, not declared before"}
     for year, url in sorted(years.items()):
         files[f"ita_summary/ita_summary_{year}.zip"] = {
             "origin": url, "snapshot": snapshot_label(url, downloaded), "kind": "official",
@@ -211,12 +228,16 @@ def official_sources(raw_dir: Path, years: dict[int, str], downloaded: dt.date,
             files[f"dol/OSHA_{stem}.zip"] = {"origin": url, "snapshot": downloaded.isoformat(), "kind": "official"}
     else:
         for rel, meta in old.get("files", {}).items():
-            if rel.startswith("dol/") and meta.get("kind", old.get("kind")) != "third_party_copy":
+            if rel.startswith("dol/") and meta.get("kind", old_kind) != "third_party_copy":
                 files[rel] = {**meta, "kind": "official"}
     note = f"ITA Form 300A summary files downloaded from osha.gov ({downloaded.isoformat()})"
     if any(rel.startswith("dol/") for rel in files):
         note += "; DOL enforcement files from data.dol.gov"
-    return {"kind": "official", "note": note + ".", "files": files}
+    kinds = {f.get("kind") for f in files.values()}
+    kind = "official" if kinds <= {"official"} else "third_party_copy"
+    if kind != "official":
+        note += "; some years are still third-party copies (see per-file kind)"
+    return {"kind": kind, "note": note + ".", "files": files}
 
 
 def _dol_has_table(db_path: Path) -> bool:
@@ -334,7 +355,7 @@ def run(
         (reports_dir / "official_vs_copy.json").write_text(json.dumps(comparison, indent=2) + "\n")
 
     # 5. move the copies aside
-    moved = stash_copies(summary_dir)
+    moved = stash_copies(summary_dir, years)
     for p in moved:
         log(f"  moved copy aside: {p}")
 
@@ -348,7 +369,7 @@ def run(
         shutil.copy2(manifest, raw_dir / "SOURCES.previous.json")
     sources = official_sources(raw_dir, urls, today, DOL_URLS if refresh_dol else None)
     manifest.write_text(json.dumps(sources, indent=2) + "\n")
-    log(f"  wrote {manifest} ({len(sources['files'])} files, kind official)")
+    log(f"  wrote {manifest} ({len(sources['files'])} files, kind {sources['kind']})")
 
     # 8. rebuild
     if train:

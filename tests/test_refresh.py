@@ -119,3 +119,63 @@ def test_refresh_stops_before_touching_anything_when_a_url_is_gone(tmp_path):
                     fetch=lambda *_a: pytest.fail("downloaded after a failed URL check"))
     assert copy.exists()
     assert not (raw / "SOURCES.json").exists()
+
+
+def test_partial_refresh_keeps_other_copies_loaded_and_declared(tmp_path):
+    """--year 2023 alone must not move the other copies or call the run official."""
+    synth = build_synthetic_dataset(tmp_path / "synth", n_establishments=80)
+    raw = tmp_path / "raw"
+    summary = raw / "ita_summary"
+    summary.mkdir(parents=True)
+    for year in (2019, 2020, 2023):
+        (summary / f"ita_summary_{year}.csv").write_bytes(synth[year].read_bytes())
+    (raw / "SOURCES.json").write_text(json.dumps({
+        "kind": "third_party_copy",
+        "files": {"ita_summary/ita_summary_2019.csv": {"origin": "copy"},
+                  "ita_summary/ita_summary_2023.csv": {"origin": "copy"}},
+    }))
+    refresh.run(
+        [2023], train=False, raw_dir=raw, processed_dir=tmp_path / "p", reports_dir=tmp_path / "r",
+        db_path=tmp_path / "db.duckdb", log=lambda _m: None, head=lambda _u: 200,
+        fetch=lambda url, dest: _zip_csv(synth[2023], dest),
+    )
+    assert sorted(p.name for p in summary.glob("ita_summary_*.csv")) == ["ita_summary_2019.csv",
+                                                                        "ita_summary_2020.csv"]
+    src = json.loads((raw / "SOURCES.json").read_text())
+    assert src["kind"] == "third_party_copy"
+    assert src["files"]["ita_summary/ita_summary_2019.csv"]["kind"] == "third_party_copy"
+    assert src["files"]["ita_summary/ita_summary_2020.csv"]["kind"] == "third_party_copy"  # was undeclared
+    assert src["files"]["ita_summary/ita_summary_2023.zip"]["kind"] == "official"
+    assert "ita_summary/ita_summary_2023.csv" not in src["files"]
+
+
+def test_forced_download_replaces_an_existing_file(tmp_path, monkeypatch):
+    """A refresh re-downloads over the old archive; rename() onto it fails on Windows."""
+    from nextrecordable import download
+
+    dest = tmp_path / "OSHA_inspection.zip"
+    dest.write_bytes(b"old")
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = {"content-length": "3"}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self, chunk_size):
+            yield b"new"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(download.httpx, "stream", lambda *a, **k: FakeResponse())
+    calls = []
+    real_replace = Path.replace
+    monkeypatch.setattr(Path, "replace", lambda self, t: calls.append(t) or real_replace(self, t))
+    download.download_file("https://example.invalid/x.zip", dest, force=True)
+    assert dest.read_bytes() == b"new"
+    assert calls == [dest]

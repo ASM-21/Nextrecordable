@@ -55,7 +55,7 @@ def download_file(url: str, dest: Path, *, force: bool = False) -> Path:
                     f.write(chunk)
                     progress.update(task, advance=len(chunk))
 
-    tmp.rename(dest)
+    tmp.replace(dest)  # replace, not rename: rename onto an existing file fails on Windows
     return dest
 
 
