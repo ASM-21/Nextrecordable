@@ -11,6 +11,7 @@ import sys
 import httpx
 
 from nextrecordable.config import ITA_CASE_DETAIL_URLS, ITA_SUMMARY_URLS
+from nextrecordable.download import HEADERS
 
 
 def main() -> int:
@@ -19,7 +20,7 @@ def main() -> int:
     urls += [("case-detail", y, u) for y, u in ITA_CASE_DETAIL_URLS.items()]
     for kind, year, url in urls:
         try:
-            status = httpx.head(url, follow_redirects=True, timeout=20.0).status_code
+            status = httpx.head(url, follow_redirects=True, timeout=20.0, headers=HEADERS).status_code
         except httpx.HTTPError as exc:
             status = f"error: {exc.__class__.__name__}"
         print(f"{kind:12s} {year}  {status}  {url}")

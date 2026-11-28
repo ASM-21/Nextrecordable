@@ -108,6 +108,8 @@ nextrecordable falsify         # size bands, unseen establishments, other test y
 nextrecordable serve           # lookup page and API on http://127.0.0.1:8000
 ```
 
+Switching an existing checkout from the third-party ITA copies to osha.gov's own files is one command, `nextrecordable refresh-official` (add `--refresh-dol` to fetch the enforcement files too); `DATA-GAPS.md` says what it does.
+
 Optional enforcement features: download `OSHA_inspection.zip` and `OSHA_violation.zip` from data.dol.gov (exact URLs in `DATA-GAPS.md`) and unzip them into `data/raw/dol/inspection/` and `data/raw/dol/violation/` before `run-all`, or load them with `nextrecordable load-enforcement --inspection ... --violation ...`. Declare where every raw file came from in `data/raw/SOURCES.json` (format in `provenance.py`); without it, outputs are marked undeclared.
 
 Step by step: `nextrecordable download summary`, `load`, `load-enforcement`, `build`, `sanity`, `train`, `report`, `falsify`, `serve`, plus `synthetic-baseline` (the comparison run in METRICS.md), `explore` and `query "SQL"`. Paths default to `./data` and `./reports`; override with `NEXTRECORDABLE_DATA_DIR`, `NEXTRECORDABLE_DB_PATH`, `NEXTRECORDABLE_MODEL_DIR`, `NEXTRECORDABLE_REPORTS_DIR`.

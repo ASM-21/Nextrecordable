@@ -1,6 +1,7 @@
 """Command-line interface.
 
     nextrecordable run-all              download -> load -> build -> sanity -> train
+    nextrecordable refresh-official     swap third-party ITA copies for osha.gov files, then retrain
     nextrecordable download summary [--year 2024 ...]
     nextrecordable load
     nextrecordable load-enforcement --inspection osha_inspection.csv --violation osha_violation.csv
@@ -177,6 +178,28 @@ def run_all(
             raise typer.Exit(1)
         run_train(con, model_dir=config.MODEL_DIR, reports_dir=config.REPORTS_DIR, num_boost_round=rounds)
     console.print(f"[green]Done. Read {config.REPORTS_DIR / 'METRICS.md'}, then `nextrecordable serve`.[/green]")
+
+
+@app.command("refresh-official")
+def refresh_official(
+    year: Annotated[list[int] | None, typer.Option("--year", "-y", help="Year(s); default all configured")] = None,
+    refresh_dol: Annotated[bool, typer.Option("--refresh-dol", help="Also re-download the DOL enforcement files")] = False,
+    no_train: Annotated[bool, typer.Option("--no-train", help="Download, check and declare only")] = False,
+):
+    """Replace third-party ITA copies with osha.gov's files, declare them official, retrain (DATA-GAPS.md)."""
+    import subprocess
+
+    from .refresh import RefreshError
+    from .refresh import run as run_refresh
+
+    try:
+        run_refresh(year, refresh_dol=refresh_dol, train=not no_train, db_path=STATE["db"], log=console.print)
+    except RefreshError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    except subprocess.CalledProcessError as exc:
+        console.print(f"[red]Step failed: {' '.join(exc.cmd[3:])}. Fix it, then rerun; downloads are kept.[/red]")
+        raise typer.Exit(1) from exc
 
 
 @app.command()
